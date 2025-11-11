@@ -43,6 +43,9 @@ class RevolverGunPlugin(Star):
         
         # 注册函数工具
         self._register_function_tools()
+        
+        # 注册事件监听器
+        self.initialize()
     
     def _register_function_tools(self):
         """注册函数工具到AstrBot"""
@@ -477,21 +480,24 @@ class RevolverGunPlugin(Star):
 
     # ========== 随机走火监听 ==========
     
-    @filter.on_message() & filter.event_message_type("group")
     async def on_group_message(self, event: AstrMessageEvent):
         """监听群消息，触发随机走火
         
         监听非指令消息，根据设定的概率触发随机走火事件
         """
         try:
+            # 检查是否是群消息
+            group_id = self._get_group_id(event)
+            if not group_id:
+                return
+
             # 避免指令冲突
             message = (event.message_str or "").strip()
             if message.startswith("/"):
                 return
 
             # 检查走火
-            group_id = self._get_group_id(event)
-            if group_id and self._check_misfire(group_id):
+            if self._check_misfire(group_id):
                 user_name = self._get_user_name(event)
                 user_id = int(event.get_sender_id())
                 
@@ -506,6 +512,19 @@ class RevolverGunPlugin(Star):
                 )
         except Exception as e:
             logger.error(f"随机走火监听失败: {e}")
+    
+    async def initialize(self):
+        """插件初始化时注册事件监听器"""
+        try:
+            if hasattr(self.context, 'register_event_listener'):
+                # 新版本使用注册方法
+                self.context.register_event_listener(self.on_group_message)
+            else:
+                # 兼容旧版本
+                self.context.event_bus.add_listener(self.on_group_message)
+            logger.info("随机走火事件监听器注册成功")
+        except Exception as e:
+            logger.error(f"注册事件监听器失败: {e}", exc_info=True)
 
     # ========== 辅助功能 ==========
     
