@@ -45,8 +45,6 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
             },
             "required": [],
         }
-        self.group_games = {}
-        self.group_misfire = {}
         self.plugin = plugin_instance
 
     def _get_random_bullet_count(self) -> int:
@@ -70,7 +68,7 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
                 return "❌ 仅限群聊使用"
 
             # 检查现有游戏
-            if group_id in self.group_games:
+            if group_id in self.plugin.group_games:
                 return "💥 游戏还在进行中！"
 
             # 确定子弹数量
@@ -79,7 +77,7 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
 
             # 创建游戏
             chambers = self._create_chambers(bullets)
-            self.group_games[group_id] = {
+            self.plugin.group_games[group_id] = {
                 "chambers": chambers,
                 "current": 0,
                 "start_time": datetime.datetime.now(),
@@ -104,7 +102,6 @@ class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
         self.name = "join_revolver_game"
         self.description = "Join the current Russian Roulette game by pulling the trigger. Use this when user says '我要玩', '我也要', '开枪', 'shoot', or wants to participate in an ongoing game."
         self.parameters = {"type": "object", "properties": {}, "required": []}
-        self.group_games = {}
         self.plugin = plugin_instance
 
     async def run(self, event: AstrMessageEvent) -> str:
@@ -170,7 +167,7 @@ class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
 
             # 检查结束
             if sum(chambers) == 0:
-                del self.group_games[group_id]
+                del self.plugin.group_games[group_id]
                 end_msg = text_manager.get_text("game_end")
                 result += f"\n🏁 {end_msg}！"
 
@@ -191,7 +188,6 @@ class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
         self.name = "check_revolver_status"
         self.description = "Check the current status of the Russian Roulette game. Use this when user asks about game status, wants to know remaining bullets, or says '状态', 'status', '游戏情况'."
         self.parameters = {"type": "object", "properties": {}, "required": []}
-        self.group_games = {}
         self.plugin = plugin_instance
 
     async def run(self, event: AstrMessageEvent) -> str:

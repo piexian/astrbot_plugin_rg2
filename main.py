@@ -79,16 +79,10 @@ class RevolverGunPlugin(Star):
                 CheckRevolverStatusTool,
             )
 
-            # 初始化工具并传递插件实例和游戏状态
+            # 初始化工具并传递插件实例
             start_tool = StartRevolverGameTool(plugin_instance=self)
             join_tool = JoinRevolverGameTool(plugin_instance=self)
             check_tool = CheckRevolverStatusTool(plugin_instance=self)
-
-            # 共享游戏状态
-            start_tool.group_games = self.group_games
-            start_tool.group_misfire = self.group_misfire
-            join_tool.group_games = self.group_games
-            check_tool.group_games = self.group_games
 
             # >= v4.5.1 使用新的注册方式
             if hasattr(self.context, "add_llm_tools"):
