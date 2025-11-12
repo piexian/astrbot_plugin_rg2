@@ -209,6 +209,46 @@ class RevolverGunPlugin(Star):
             return False
         return random.random() < self.misfire_prob
 
+    async def _is_user_bannable(self, event: AstrMessageEvent, user_id: int) -> bool:
+        """检查用户是否可以被禁言（不是群主或管理员）
+        
+        Args:
+            event: 消息事件对象
+            user_id: 要检查的用户ID
+            
+        Returns:
+            是否可以被禁言
+        """
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                return False
+            
+            # 调用API获取群成员信息
+            if hasattr(event.bot, 'get_group_member_info'):
+                member_info = await event.bot.get_group_member_info(
+                    group_id=group_id,
+                    user_id=user_id,
+                    no_cache=True
+                )
+                
+                # 检查角色
+                role = member_info.get('role', 'member') if isinstance(member_info, dict) else getattr(member_info, 'role', 'member')
+                
+                # 群主和管理员不能被禁言
+                if role in ['owner', 'admin']:
+                    logger.info(f"用户 {user_id} 是{role}，跳过禁言")
+                    return False
+                
+                return True
+            
+            # 如果无法获取信息，默认可以禁言（兼容旧版本）
+            return True
+        except Exception as e:
+            logger.error(f"检查用户可禁言状态失败: {e}")
+            # 出错时默认可以禁言，避免游戏卡住
+            return True
+
     async def _ban_user(self, event: AstrMessageEvent, user_id: int):
         """禁言用户
         
@@ -218,6 +258,12 @@ class RevolverGunPlugin(Star):
         """
         group_id = self._get_group_id(event)
         if not group_id:
+            return
+
+        # 检查是否可以禁言该用户
+        if not await self._is_user_bannable(event, user_id):
+            user_name = self._get_user_name(event)
+            logger.info(f"用户 {user_name}({user_id}) 是管理员/群主，跳过禁言")
             return
 
         duration = random.randint(self.min_ban, self.max_ban)
