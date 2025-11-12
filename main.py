@@ -70,6 +70,24 @@ class RevolverGunPlugin(Star):
         # 注册函数工具
         self._register_function_tools()
 
+    def _init_text_manager(self):
+        """初始化文本管理器"""
+        global text_manager
+        try:
+            from .text_manager import TextManager
+
+            text_manager = TextManager()
+            logger.info("文本管理器初始化成功")
+        except Exception as e:
+            logger.error(f"文本管理器初始化失败: {e}")
+
+            # 使用默认文本管理器（空实现）
+            class DummyTextManager:
+                def get_text(self, category, **kwargs):
+                    return ""
+
+            text_manager = DummyTextManager()
+
     def _register_function_tools(self):
         """注册函数工具到AstrBot"""
         try:
@@ -192,24 +210,6 @@ class RevolverGunPlugin(Star):
             logger.debug(f"已保存 {len(self.group_misfire)} 个群的走火配置")
         except Exception as e:
             logger.error(f"保存走火配置失败: {e}")
-
-    def _init_text_manager(self):
-        """初始化文本管理器"""
-        global text_manager
-        try:
-            from .text_manager import TextManager
-
-            text_manager = TextManager()
-            logger.info("文本管理器初始化成功")
-        except Exception as e:
-            logger.error(f"文本管理器初始化失败: {e}")
-
-            # 使用默认文本管理器（空实现）
-            class DummyTextManager:
-                def get_text(self, category, **kwargs):
-                    return ""
-
-            text_manager = DummyTextManager()
 
     def _create_chambers(self, bullet_count: int) -> List[bool]:
         """创建弹膛状态
