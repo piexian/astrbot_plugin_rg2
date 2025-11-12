@@ -28,5 +28,11 @@
     "type": "bool",
     "default": false,
     "hint": "开启后新群第一次使用会自动启用走火功能"
+  },
+  "command_prefix": {
+    "description": "指令前缀，用于识别指令消息",
+ "type": "str",
+    "default": "/",
+    "hint": "默认为/，可设置为!、.等其他符号，避免随机走火误触发"
   }
 }
