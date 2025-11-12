@@ -9,12 +9,13 @@ from ..text_manager import text_manager
 
 CHAMBER_COUNT = 6
 
+
 class StartRevolverGameTool(FunctionTool):
     """AI启动左轮手枪游戏的工具类"""
-    
+
     def __init__(self, plugin_instance=None):
         """初始化工具
-        
+
         Args:
             plugin_instance: 插件实例，用于访问禁言等方法
         """
@@ -27,27 +28,27 @@ class StartRevolverGameTool(FunctionTool):
                     "type": "integer",
                     "description": "Number of bullets to load (1-6). If not provided, will load random bullets.",
                     "minimum": 1,
-                    "maximum": 6
+                    "maximum": 6,
                 }
             },
-            "required": []
+            "required": [],
         }
         self.group_games = {}
         self.group_misfire = {}
         self.plugin = plugin_instance
-    
+
     def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
         """获取群ID"""
-        return getattr(event.message_obj, 'group_id', None)
-    
+        return getattr(event.message_obj, "group_id", None)
+
     def _get_user_name(self, event: AstrMessageEvent) -> str:
         """获取用户昵称"""
         return event.get_sender_name() or "玩家"
-    
+
     def _get_random_bullet_count(self) -> int:
         """获取随机子弹数量"""
         return random.randint(1, CHAMBER_COUNT)
-    
+
     def _create_chambers(self, bullet_count: int):
         """创建弹膛状态"""
         chambers = [False] * CHAMBER_COUNT
@@ -57,11 +58,7 @@ class StartRevolverGameTool(FunctionTool):
                 chambers[pos] = True
         return chambers
 
-    async def run(
-        self,
-        event: AstrMessageEvent,
-        bullets: Optional[int] = None
-    ) -> str:
+    async def run(self, event: AstrMessageEvent, bullets: Optional[int] = None) -> str:
         """启动游戏逻辑"""
         try:
             group_id = self._get_group_id(event)
@@ -79,45 +76,37 @@ class StartRevolverGameTool(FunctionTool):
             # 创建游戏
             chambers = self._create_chambers(bullets)
             self.group_games[group_id] = {
-                'chambers': chambers,
-                'current': 0,
-                'start_time': datetime.datetime.now()
+                "chambers": chambers,
+                "current": 0,
+                "start_time": datetime.datetime.now(),
             }
 
             user_name = self._get_user_name(event)
-            load_msg = text_manager.get_text('load_messages', sender_nickname=user_name)
-            return (
-                f"🎯 {user_name} 挑战命运！\n"
-                f"🔫 {load_msg}\n"
-                f"💀 谁敢扣动扳机？"
-            )
+            load_msg = text_manager.get_text("load_messages", sender_nickname=user_name)
+            return f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 谁敢扣动扳机？"
         except Exception as e:
             return f"❌ Failed to start game: {str(e)}"
 
 
 class JoinRevolverGameTool(FunctionTool):
     """AI参与左轮手枪游戏的工具类"""
-    
+
     def __init__(self, plugin_instance=None):
         """初始化工具
-        
+
         Args:
             plugin_instance: 插件实例，用于访问禁言等方法
         """
         self.name = "join_revolver_game"
         self.description = "Join the current Russian Roulette game by pulling the trigger. Use this when user says '我要玩', '我也要', '开枪', 'shoot', or wants to participate in an ongoing game."
-        self.parameters = {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
+        self.parameters = {"type": "object", "properties": {}, "required": []}
         self.group_games = {}
         self.plugin = plugin_instance
-    
+
     def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
         """获取群ID"""
-        return getattr(event.message_obj, 'group_id', None)
-    
+        return getattr(event.message_obj, "group_id", None)
+
     def _get_user_name(self, event: AstrMessageEvent) -> str:
         """获取用户昵称"""
         return event.get_sender_name() or "玩家"
@@ -135,17 +124,17 @@ class JoinRevolverGameTool(FunctionTool):
 
             user_name = self._get_user_name(event)
             user_id = int(event.get_sender_id())
-            
-            chambers = game['chambers']
-            current = game['current']
+
+            chambers = game["chambers"]
+            current = game["current"]
 
             if chambers[current]:
                 # 中弹
                 chambers[current] = False
-                game['current'] = (current + 1) % CHAMBER_COUNT
-                
+                game["current"] = (current + 1) % CHAMBER_COUNT
+
                 # 如果有插件实例，检查是否可禁言
-                if self.plugin and hasattr(self.plugin, '_is_user_bannable'):
+                if self.plugin and hasattr(self.plugin, "_is_user_bannable"):
                     # 检查是否可禁言（管理员/群主免疫）
                     if not await self.plugin._is_user_bannable(event, user_id):
                         # 管理员/群主免疫
@@ -154,17 +143,21 @@ class JoinRevolverGameTool(FunctionTool):
                         # 普通用户，执行禁言
                         ban_duration = await self.plugin._ban_user(event, user_id)
                         if ban_duration > 0:
-                            formatted_duration = self.plugin._format_ban_duration(ban_duration)
-                            trigger_msg = text_manager.get_text('trigger_descriptions')
+                            formatted_duration = self.plugin._format_ban_duration(
+                                ban_duration
+                            )
+                            trigger_msg = text_manager.get_text("trigger_descriptions")
                             result = f"💥 {trigger_msg}\n🔇 禁言 {formatted_duration}"
                         else:
                             result = f"💥 {user_name} 中弹！\n⚠️ 禁言失败！"
-                elif self.plugin and hasattr(self.plugin, '_ban_user'):
+                elif self.plugin and hasattr(self.plugin, "_ban_user"):
                     # 旧版本兼容，直接执行禁言
                     ban_duration = await self.plugin._ban_user(event, user_id)
                     if ban_duration > 0:
-                        formatted_duration = self.plugin._format_ban_duration(ban_duration)
-                        trigger_msg = text_manager.get_text('trigger_descriptions')
+                        formatted_duration = self.plugin._format_ban_duration(
+                            ban_duration
+                        )
+                        trigger_msg = text_manager.get_text("trigger_descriptions")
                         result = f"💥 {trigger_msg}\n🔇 禁言 {formatted_duration}"
                     else:
                         result = f"💥 {user_name} 中弹！\n⚠️ 管理员/群主免疫！"
@@ -173,14 +166,16 @@ class JoinRevolverGameTool(FunctionTool):
                     result = f"💥 {user_name} 中弹！\n🔇 接受惩罚..."
             else:
                 # 空弹
-                game['current'] = (current + 1) % CHAMBER_COUNT
-                miss_msg = text_manager.get_text('miss_messages', sender_nickname=user_name)
+                game["current"] = (current + 1) % CHAMBER_COUNT
+                miss_msg = text_manager.get_text(
+                    "miss_messages", sender_nickname=user_name
+                )
                 result = miss_msg
 
             # 检查结束
             if sum(chambers) == 0:
                 del self.group_games[group_id]
-                end_msg = text_manager.get_text('game_end')
+                end_msg = text_manager.get_text("game_end")
                 result += f"\n🏁 {end_msg}！"
 
             return result
@@ -190,26 +185,22 @@ class JoinRevolverGameTool(FunctionTool):
 
 class CheckRevolverStatusTool(FunctionTool):
     """AI查询左轮手枪游戏状态的工具类"""
-    
+
     def __init__(self, plugin_instance=None):
         """初始化工具
-        
+
         Args:
             plugin_instance: 插件实例，用于访问禁言等方法
         """
         self.name = "check_revolver_status"
         self.description = "Check the current status of the Russian Roulette game. Use this when user asks about game status, wants to know remaining bullets, or says '状态', 'status', '游戏情况'."
-        self.parameters = {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
+        self.parameters = {"type": "object", "properties": {}, "required": []}
         self.group_games = {}
         self.plugin = plugin_instance
-    
+
     def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
         """获取群ID"""
-        return getattr(event.message_obj, 'group_id', None)
+        return getattr(event.message_obj, "group_id", None)
 
     async def run(self, event: AstrMessageEvent) -> str:
         """查询游戏状态逻辑"""
@@ -222,13 +213,13 @@ class CheckRevolverStatusTool(FunctionTool):
             if not game:
                 return "🔍 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
 
-            chambers = game['chambers']
-            current = game['current']
+            chambers = game["chambers"]
+            current = game["current"]
             remaining = sum(chambers)
-            
-            status_msg = text_manager.get_text('game_status')
+
+            status_msg = text_manager.get_text("game_status")
             danger = "🔴 危险" if chambers[current] else "🟢 安全"
-            
+
             return (
                 f"🔫 {status_msg}\n"
                 f"📊 剩余：{remaining}发子弹\n"

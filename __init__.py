@@ -3,7 +3,7 @@ AstrBot 左轮手枪对决插件
 
 一个刺激的群聊轮盘赌游戏插件，支持：
 - 管理员装填子弹
-- 用户开枪对决  
+- 用户开枪对决
 - 随机走火功能
 - AI自然语言交互
 - 禁言惩罚机制
@@ -15,4 +15,4 @@ AstrBot 左轮手枪对决插件
 
 from .main import RevolverGunPlugin
 
-__all__ = ['RevolverGunPlugin']
+__all__ = ["RevolverGunPlugin"]
