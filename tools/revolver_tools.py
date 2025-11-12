@@ -46,7 +46,7 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
         """启动游戏逻辑 - 调用主插件方法完成所有操作"""
         try:
             # 调用主插件的启动游戏方法
-            if hasattr(self.plugin, 'ai_start_game'):
+            if hasattr(self.plugin, "ai_start_game"):
                 await self.plugin.ai_start_game(event, bullets)
                 return "游戏启动成功"
             else:
@@ -83,7 +83,7 @@ class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
         """参与游戏逻辑 - 调用主插件方法完成所有操作"""
         try:
             # 调用主插件的加入游戏方法
-            if hasattr(self.plugin, 'ai_join_game'):
+            if hasattr(self.plugin, "ai_join_game"):
                 await self.plugin.ai_join_game(event)
                 return "游戏操作成功"
             else:
@@ -119,7 +119,7 @@ class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
         """查询游戏状态逻辑 - 调用主插件方法完成所有操作"""
         try:
             # 调用主插件的检查状态方法
-            if hasattr(self.plugin, 'ai_check_status'):
+            if hasattr(self.plugin, "ai_check_status"):
                 await self.plugin.ai_check_status(event)
                 return "状态查询成功"
             else:
