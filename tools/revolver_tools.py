@@ -12,14 +12,14 @@ class StartRevolverGameTool(FunctionTool):
     """AI启动左轮手枪游戏的工具类"""
     
     name: str = "start_revolver_game"
-    description: str = "启动左轮手枪游戏，支持指定子弹数量"
+    description: str = "Start a new game of Russian Roulette. Use this when user wants to play, start a new round, or says '再来一局' (play again). If bullet count is not specified, random bullets (1-6) will be loaded."
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
             "properties": {
                 "bullets": {
                     "type": "integer",
-                    "description": "子弹数量(1-6发)，不指定则随机",
+                    "description": "Number of bullets to load (1-6). If not provided, will load random bullets.",
                     "minimum": 1,
                     "maximum": 6
                 }
@@ -88,7 +88,7 @@ class StartRevolverGameTool(FunctionTool):
                 f"💀 谁敢扣动扳机？"
             )
         except Exception as e:
-            return f"❌ 游戏启动失败: {str(e)}"
+            return f"❌ Failed to start game: {str(e)}"
 
 
 @dataclass
@@ -96,7 +96,7 @@ class JoinRevolverGameTool(FunctionTool):
     """AI参与左轮手枪游戏的工具类"""
     
     name: str = "join_revolver_game"
-    description: str = "参与当前的左轮手枪游戏，执行开枪动作"
+    description: str = "Join the current Russian Roulette game by pulling the trigger. Use this when user says '我要玩', '我也要', '开枪', 'shoot', or wants to participate in an ongoing game."
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
@@ -151,7 +151,7 @@ class JoinRevolverGameTool(FunctionTool):
 
             return result
         except Exception as e:
-            return f"❌ 参与失败: {str(e)}"
+            return f"❌ Failed to join game: {str(e)}"
 
 
 @dataclass
@@ -159,7 +159,7 @@ class CheckRevolverStatusTool(FunctionTool):
     """AI查询左轮手枪游戏状态的工具类"""
     
     name: str = "check_revolver_status"
-    description: str = "查询当前左轮手枪游戏的状态信息"
+    description: str = "Check the current status of the Russian Roulette game. Use this when user asks about game status, wants to know remaining bullets, or says '状态', 'status', '游戏情况'."
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
@@ -200,4 +200,4 @@ class CheckRevolverStatusTool(FunctionTool):
                 f"{danger}"
             )
         except Exception as e:
-            return f"❌ 查询失败: {str(e)}"
+            return f"❌ Failed to check status: {str(e)}"

@@ -249,6 +249,32 @@ class RevolverGunPlugin(Star):
             # 出错时默认可以禁言，避免游戏卡住
             return True
 
+    def _format_ban_duration(self, seconds: int) -> str:
+        """格式化禁言时长显示
+        
+        Args:
+            seconds: 禁言时长（秒）
+            
+        Returns:
+            格式化后的时长字符串
+        """
+        if seconds < 60:
+            return f"{seconds}秒"
+        elif seconds < 3600:
+            minutes = seconds // 60
+            remaining_seconds = seconds % 60
+            if remaining_seconds > 0:
+                return f"{minutes}分{remaining_seconds}秒"
+            else:
+                return f"{minutes}分钟"
+        else:
+            hours = seconds // 3600
+            remaining_minutes = (seconds % 3600) // 60
+            if remaining_minutes > 0:
+                return f"{hours}小时{remaining_minutes}分钟"
+            else:
+                return f"{hours}小时"
+
     async def _ban_user(self, event: AstrMessageEvent, user_id: int) -> int:
         """禁言用户
         
@@ -261,26 +287,38 @@ class RevolverGunPlugin(Star):
         """
         group_id = self._get_group_id(event)
         if not group_id:
+            logger.warning(f"❌ 无法获取群ID，跳过禁言")
             return 0
 
         # 检查是否可以禁言该用户
         if not await self._is_user_bannable(event, user_id):
             user_name = self._get_user_name(event)
-            logger.info(f"用户 {user_name}({user_id}) 是管理员/群主，跳过禁言")
+            logger.info(f"⏭️ 用户 {user_name}({user_id}) 是管理员/群主，跳过禁言")
             return 0
 
         duration = random.randint(self.min_ban, self.max_ban)
+        formatted_duration = self._format_ban_duration(duration)
+        
         try:
             if hasattr(event.bot, 'set_group_ban'):
+                logger.info(f"🎯 正在禁言用户 {user_id}，时长 {formatted_duration}")
                 await event.bot.set_group_ban(
                     group_id=group_id,
                     user_id=user_id,
                     duration=duration
                 )
-                logger.info(f"用户 {user_id} 在群 {group_id} 被禁言 {duration} 秒")
+                logger.info(f"✅ 用户 {user_id} 在群 {group_id} 被禁言 {formatted_duration}")
                 return duration
+            else:
+                logger.error(f"❌ Bot 没有 set_group_ban 方法，无法禁言")
+                logger.error(f"💡 提示：请检查机器人适配器是否支持禁言功能")
         except Exception as e:
-            logger.error(f"禁言用户失败: {e}")
+            logger.error(f"❌ 禁言用户失败: {e}", exc_info=True)
+            # 检查是否是权限问题
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['permission', '权限', 'privilege', 'insufficient']):
+                logger.error(f"🔐 权限不足：请检查机器人是否有群管理权限！")
+                logger.error(f"💡 解决方法：将机器人设置为群管理员")
         
         return 0
 
@@ -377,12 +415,15 @@ class RevolverGunPlugin(Star):
                 chambers[current] = False
                 game['current'] = (current + 1) % CHAMBER_COUNT
                 
-                # 执行禁言并获取禁言时长
+                # 执行禁言并检查是否成功
                 ban_duration = await self._ban_user(event, user_id)
                 if ban_duration > 0:
-                    ban_msg = f"🔇 禁言 {ban_duration} 秒！"
+                    formatted_duration = self._format_ban_duration(ban_duration)
+                    ban_msg = f"🔇 禁言 {formatted_duration}"
                 else:
-                    ban_msg = f"⚠️ 管理员/群主，跳过禁言！"
+                    ban_msg = f"⚠️ 管理员/群主免疫！"
+                
+                logger.info(f"💥 用户 {user_name}({user_id}) 在群 {group_id} 中弹")
                 
                 logger.info(f"用户 {user_name}({user_id}) 在群 {group_id} 中弹")
                 
@@ -562,9 +603,12 @@ class RevolverGunPlugin(Star):
                 # 执行禁言并获取禁言时长
                 ban_duration = await self._ban_user(event, user_id)
                 if ban_duration > 0:
-                    ban_msg = f"🔇 禁言 {ban_duration} 秒！"
+                    formatted_duration = self._format_ban_duration(ban_duration)
+                    ban_msg = f"🔇 禁言 {formatted_duration}！"
                 else:
                     ban_msg = f"⚠️ 管理员/群主，跳过禁言！"
+                
+                logger.info(f"💥 群 {group_id} 用户 {user_name}({user_id}) 触发随机走火")
                 
                 logger.info(f"群 {group_id} 用户 {user_name}({user_id}) 触发随机走火")
                 
