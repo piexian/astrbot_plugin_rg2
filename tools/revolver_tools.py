@@ -18,15 +18,6 @@ class BaseRevolverTool:
         """获取用户昵称"""
         return event.get_sender_name() or "玩家"
 
-    def _get_text_manager(self):
-        """获取文本管理器实例"""
-        if hasattr(self.plugin, "text_manager"):
-            return self.plugin.text_manager
-        # 回退到全局text_manager
-        from ..text_manager import text_manager as fallback
-
-        return fallback
-
 
 class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
     """AI启动左轮手枪游戏的工具类"""
@@ -35,7 +26,7 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
         """初始化工具
 
         Args:
-            plugin_instance: 插件实例，用于访问禁言等方法
+            plugin_instance: 插件实例，用于访问游戏状态
         """
         self.name = "start_revolver_game"
         self.description = """Start a new game of Russian Roulette. Use this when user wants to play, start a new round, or says '再来一局' (play again). If bullet count is not specified, random bullets (1-6) will be loaded.
@@ -69,15 +60,15 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
         return chambers
 
     async def run(self, event: AstrMessageEvent, bullets: Optional[int] = None) -> str:
-        """启动游戏逻辑"""
+        """启动游戏逻辑 - 只准备游戏数据，不输出结果"""
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return "❌ 仅限群聊使用"
+                return "error:❌ 仅限群聊使用"
 
             # 检查现有游戏
             if group_id in self.plugin.group_games:
-                return "💥 游戏还在进行中！"
+                return "error:💥 游戏还在进行中！"
 
             # 确定子弹数量
             if bullets is None or not (1 <= bullets <= CHAMBER_COUNT):
@@ -92,16 +83,12 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
             }
 
             # 启动超时机制
-            if self.plugin and hasattr(self.plugin, "_start_timeout"):
+            if hasattr(self.plugin, "_start_timeout"):
                 await self.plugin._start_timeout(event, group_id)
 
-            user_name = self._get_user_name(event)
-            load_msg = self._get_text_manager().get_text(
-                "load_messages", sender_nickname=user_name
-            )
-            return f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 谁敢扣动扳机？"
+            return f"game_started:{group_id}:{bullets}"
         except Exception as e:
-            return f"❌ Failed to start game: {str(e)}"
+            return f"error:{str(e)}"
 
 
 class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
@@ -111,7 +98,7 @@ class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
         """初始化工具
 
         Args:
-            plugin_instance: 插件实例，用于访问禁言等方法
+            plugin_instance: 插件实例，用于访问游戏状态
         """
         self.name = "join_revolver_game"
         self.description = """Join the current Russian Roulette game by pulling the trigger. Use this when user says '我要玩', '我也要', '开枪', 'shoot', or wants to participate in an ongoing game.
@@ -131,73 +118,31 @@ class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
         self.plugin = plugin_instance
 
     async def run(self, event: AstrMessageEvent, action: str = "shoot") -> str:
-        """参与游戏逻辑"""
+        """参与游戏逻辑 - 只返回动作指令，不执行禁言"""
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return "❌ 仅限群聊使用"
+                return "error:❌ 仅限群聊使用"
 
             game = self.plugin.group_games.get(group_id)
             if not game:
-                return "⚠️ 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
+                return "error:⚠️ 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
 
             user_name = self._get_user_name(event)
             user_id = int(event.get_sender_id())
 
             chambers = game["chambers"]
             current = game["current"]
+            hit = chambers[current]
 
-            if chambers[current]:
-                # 中弹
+            # 更新游戏状态
+            if hit:
                 chambers[current] = False
-                game["current"] = (current + 1) % CHAMBER_COUNT
+            game["current"] = (current + 1) % CHAMBER_COUNT
 
-                # 如果有插件实例，检查是否可禁言
-                if self.plugin and hasattr(self.plugin, "_is_user_bannable"):
-                    # 检查是否可禁言（管理员/群主免疫）
-                    if not await self.plugin._is_user_bannable(event, user_id):
-                        # 管理员/群主免疫
-                        result = f"💥 {user_name} 中弹！\n⚠️ 管理员/群主免疫！"
-                    else:
-                        # 普通用户，执行禁言
-                        ban_duration = await self.plugin._ban_user(event, user_id)
-                        if ban_duration > 0:
-                            formatted_duration = self.plugin._format_ban_duration(
-                                ban_duration
-                            )
-                            trigger_msg = self._get_text_manager().get_text(
-                                "trigger_descriptions"
-                            )
-                            result = f"💥 {trigger_msg}\n🔇 禁言 {formatted_duration}"
-                        else:
-                            result = f"💥 {user_name} 中弹！\n⚠️ 禁言失败！"
-                elif self.plugin and hasattr(self.plugin, "_ban_user"):
-                    # 旧版本兼容，直接执行禁言
-                    ban_duration = await self.plugin._ban_user(event, user_id)
-                    if ban_duration > 0:
-                        formatted_duration = self.plugin._format_ban_duration(
-                            ban_duration
-                        )
-                        trigger_msg = self._get_text_manager().get_text(
-                            "trigger_descriptions"
-                        )
-                        result = f"💥 {trigger_msg}\n🔇 禁言 {formatted_duration}"
-                    else:
-                        result = f"💥 {user_name} 中弹！\n⚠️ 管理员/群主免疫！"
-                else:
-                    # 没有插件实例，只返回文本
-                    result = f"💥 {user_name} 中弹！\n🔇 接受惩罚..."
-            else:
-                # 空弹
-                game["current"] = (current + 1) % CHAMBER_COUNT
-                miss_msg = self._get_text_manager().get_text(
-                    "miss_messages", sender_nickname=user_name
-                )
-                result = miss_msg
-
-            # 检查结束
-            if sum(chambers) == 0:
-                # 清理超时任务（如果存在）
+            # 检查游戏是否结束
+            game_ended = sum(chambers) == 0
+            if game_ended:
                 if (
                     hasattr(self.plugin, "timeout_tasks")
                     and group_id in self.plugin.timeout_tasks
@@ -205,17 +150,15 @@ class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
                     task = self.plugin.timeout_tasks[group_id]
                     if not task.done():
                         task.cancel()
-                    # 确保从字典中移除（无论是否存在）
                     self.plugin.timeout_tasks.pop(group_id, None)
-
-                # 清理游戏状态
                 del self.plugin.group_games[group_id]
-                end_msg = self._get_text_manager().get_text("game_end")
-                result += f"\n🏁 {end_msg}！"
 
-            return result
+            # 返回动作指令
+            action_code = "hit" if hit else "miss"
+            return f"game_action:{group_id}:{user_id}:{user_name}:{action_code}:{game_ended}"
+
         except Exception as e:
-            return f"❌ Failed to join game: {str(e)}"
+            return f"error:{str(e)}"
 
 
 class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
@@ -225,7 +168,7 @@ class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
         """初始化工具
 
         Args:
-            plugin_instance: 插件实例，用于访问禁言等方法
+            plugin_instance: 插件实例，用于访问游戏状态
         """
         self.name = "check_revolver_status"
         self.description = """Check the current status of the Russian Roulette game. Use this when user asks about game status, wants to know remaining bullets, or says '状态', 'status', '游戏情况'.
@@ -244,28 +187,22 @@ class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
         self.plugin = plugin_instance
 
     async def run(self, event: AstrMessageEvent, detailed: bool = False) -> str:
-        """查询游戏状态逻辑"""
+        """查询游戏状态逻辑 - 只返回状态数据"""
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return "❌ 仅限群聊使用"
+                return "error:❌ 仅限群聊使用"
 
             game = self.plugin.group_games.get(group_id)
             if not game:
-                return "🔍 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
+                return "no_game"
 
             chambers = game["chambers"]
             current = game["current"]
             remaining = sum(chambers)
+            is_danger = chambers[current]
 
-            status_msg = self._get_text_manager().get_text("game_status")
-            danger = "🔴 危险" if chambers[current] else "🟢 安全"
+            return f"game_status:{group_id}:{remaining}:{current}:{is_danger}"
 
-            return (
-                f"🔫 {status_msg}\n"
-                f"📊 剩余：{remaining}发子弹\n"
-                f"🎯 第{current + 1}膛\n"
-                f"{danger}"
-            )
         except Exception as e:
-            return f"❌ Failed to check status: {str(e)}"
+            return f"error:{str(e)}"
