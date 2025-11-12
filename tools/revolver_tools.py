@@ -10,7 +10,19 @@ from ..text_manager import text_manager
 CHAMBER_COUNT = 6
 
 
-class StartRevolverGameTool(FunctionTool):
+class BaseRevolverTool:
+    """左轮手枪工具基类，包含通用辅助方法"""
+
+    def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
+        """获取群ID"""
+        return getattr(event.message_obj, "group_id", None)
+
+    def _get_user_name(self, event: AstrMessageEvent) -> str:
+        """获取用户昵称"""
+        return event.get_sender_name() or "玩家"
+
+
+class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
     """AI启动左轮手枪游戏的工具类"""
 
     def __init__(self, plugin_instance=None):
@@ -36,14 +48,6 @@ class StartRevolverGameTool(FunctionTool):
         self.group_games = {}
         self.group_misfire = {}
         self.plugin = plugin_instance
-
-    def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
-        """获取群ID"""
-        return getattr(event.message_obj, "group_id", None)
-
-    def _get_user_name(self, event: AstrMessageEvent) -> str:
-        """获取用户昵称"""
-        return event.get_sender_name() or "玩家"
 
     def _get_random_bullet_count(self) -> int:
         """获取随机子弹数量"""
@@ -88,7 +92,7 @@ class StartRevolverGameTool(FunctionTool):
             return f"❌ Failed to start game: {str(e)}"
 
 
-class JoinRevolverGameTool(FunctionTool):
+class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
     """AI参与左轮手枪游戏的工具类"""
 
     def __init__(self, plugin_instance=None):
@@ -102,14 +106,6 @@ class JoinRevolverGameTool(FunctionTool):
         self.parameters = {"type": "object", "properties": {}, "required": []}
         self.group_games = {}
         self.plugin = plugin_instance
-
-    def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
-        """获取群ID"""
-        return getattr(event.message_obj, "group_id", None)
-
-    def _get_user_name(self, event: AstrMessageEvent) -> str:
-        """获取用户昵称"""
-        return event.get_sender_name() or "玩家"
 
     async def run(self, event: AstrMessageEvent) -> str:
         """参与游戏逻辑"""
@@ -183,7 +179,7 @@ class JoinRevolverGameTool(FunctionTool):
             return f"❌ Failed to join game: {str(e)}"
 
 
-class CheckRevolverStatusTool(FunctionTool):
+class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
     """AI查询左轮手枪游戏状态的工具类"""
 
     def __init__(self, plugin_instance=None):
@@ -197,10 +193,6 @@ class CheckRevolverStatusTool(FunctionTool):
         self.parameters = {"type": "object", "properties": {}, "required": []}
         self.group_games = {}
         self.plugin = plugin_instance
-
-    def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
-        """获取群ID"""
-        return getattr(event.message_obj, "group_id", None)
 
     async def run(self, event: AstrMessageEvent) -> str:
         """查询游戏状态逻辑"""
