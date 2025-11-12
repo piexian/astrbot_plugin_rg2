@@ -1,4 +1,4 @@
-from astrbot.api import FunctionTool
+from astrbot.api import FunctionTool, logger
 from astrbot.api.event import AstrMessageEvent
 from typing import Optional
 
@@ -45,14 +45,15 @@ class StartRevolverGameTool(FunctionTool, BaseRevolverTool):
     async def run(self, event: AstrMessageEvent, bullets: Optional[int] = None) -> str:
         """启动游戏逻辑 - 调用主插件方法完成所有操作"""
         try:
-            # 调用主插件的启动游戏方法
             if hasattr(self.plugin, "ai_start_game"):
                 await self.plugin.ai_start_game(event, bullets)
-                return "游戏启动成功"
+                return "Tool executed successfully. The plugin has sent a response to the user."
             else:
-                return "error:插件方法未找到"
+                logger.error("AI工具无法找到 ai_start_game 方法")
+                return "Error: Plugin method not found."
         except Exception as e:
-            return f"error:游戏启动失败: {str(e)}"
+            logger.error(f"AI工具 'start_revolver_game' 执行失败: {e}", exc_info=True)
+            return f"Error: Tool execution failed: {e}"
 
 
 class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
@@ -82,14 +83,15 @@ class JoinRevolverGameTool(FunctionTool, BaseRevolverTool):
     async def run(self, event: AstrMessageEvent, action: str = "shoot") -> str:
         """参与游戏逻辑 - 调用主插件方法完成所有操作"""
         try:
-            # 调用主插件的加入游戏方法
             if hasattr(self.plugin, "ai_join_game"):
                 await self.plugin.ai_join_game(event)
-                return "游戏操作成功"
+                return "Tool executed successfully. The plugin has sent a response to the user."
             else:
-                return "error:插件方法未找到"
+                logger.error("AI工具无法找到 ai_join_game 方法")
+                return "Error: Plugin method not found."
         except Exception as e:
-            return f"error:游戏操作失败: {str(e)}"
+            logger.error(f"AI工具 'join_revolver_game' 执行失败: {e}", exc_info=True)
+            return f"Error: Tool execution failed: {e}"
 
 
 class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
@@ -118,11 +120,12 @@ class CheckRevolverStatusTool(FunctionTool, BaseRevolverTool):
     async def run(self, event: AstrMessageEvent, detailed: bool = False) -> str:
         """查询游戏状态逻辑 - 调用主插件方法完成所有操作"""
         try:
-            # 调用主插件的检查状态方法
             if hasattr(self.plugin, "ai_check_status"):
                 await self.plugin.ai_check_status(event)
-                return "状态查询成功"
+                return "Tool executed successfully. The plugin has sent a response to the user."
             else:
-                return "error:插件方法未找到"
+                logger.error("AI工具无法找到 ai_check_status 方法")
+                return "Error: Plugin method not found."
         except Exception as e:
-            return f"error:状态查询失败: {str(e)}"
+            logger.error(f"AI工具 'check_revolver_status' 执行失败: {e}", exc_info=True)
+            return f"Error: Tool execution failed: {e}"

@@ -815,23 +815,31 @@ class RevolverGunPlugin(Star):
             event: 消息事件对象
             bullets: 子弹数量(可选)
         """
-        try:
-            group_id = self._get_group_id(event)
-            if not group_id:
-                return "❌ 仅限群聊使用"
+        group_id = self._get_group_id(event)
+        if not group_id:
+            logger.warning("AI工具无法获取group_id")
+            return
 
+        try:
             self._init_group(group_id)
             user_name = self._get_user_name(event)
 
             # 检查是否已有游戏
             if group_id in self.group_games:
-                return f"💥 {user_name}，游戏还在进行中！"
+                await event.bot.send_group_msg(
+                    group_id=group_id, message=f"💥 {user_name}，游戏还在进行中！"
+                )
+                return
 
             # 解析子弹数量
             if bullets is not None and 1 <= bullets <= CHAMBER_COUNT:
                 # 用户指定了子弹数量，检查是否是管理员
                 if not await self._is_group_admin(event):
-                    return f"😏 {user_name}，你又不是管理才不听你的！\n💡 请使用 /装填 进行随机装填"
+                    await event.bot.send_group_msg(
+                        group_id=group_id,
+                        message=f"😏 {user_name}，你又不是管理才不听你的！\n💡 请使用 /装填 进行随机装填",
+                    )
+                    return
             else:
                 # 未指定或无效数量，随机装填
                 bullets = self._get_random_bullet_count()
@@ -851,10 +859,14 @@ class RevolverGunPlugin(Star):
 
             # 使用YAML文本
             load_msg = text_manager.get_text("load_messages", sender_nickname=user_name)
-            return f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 谁敢扣动扳机？\n⚡ 限时 {self.timeout} 秒！"
+            response_text = f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 谁敢扣动扳机？\n⚡ 限时 {self.timeout} 秒！"
+            await event.bot.send_group_msg(group_id=group_id, message=response_text)
+
         except Exception as e:
             logger.error(f"AI启动游戏失败: {e}")
-            return "❌ 游戏启动失败，请重试"
+            await event.bot.send_group_msg(
+                group_id=group_id, message="❌ 游戏启动失败，请重试"
+            )
 
     async def ai_join_game(self, event: AstrMessageEvent):
         """AI参与游戏 - 供AI工具调用
@@ -862,11 +874,12 @@ class RevolverGunPlugin(Star):
         Args:
             event: 消息事件对象
         """
-        try:
-            group_id = self._get_group_id(event)
-            if not group_id:
-                return "❌ 仅限群聊使用"
+        group_id = self._get_group_id(event)
+        if not group_id:
+            logger.warning("AI工具无法获取group_id")
+            return
 
+        try:
             self._init_group(group_id)
             user_name = self._get_user_name(event)
             user_id = int(event.get_sender_id())
@@ -874,7 +887,10 @@ class RevolverGunPlugin(Star):
             # 检查游戏状态
             game = self.group_games.get(group_id)
             if not game:
-                return f"⚠️ {user_name}，枪里没子弹！"
+                await event.bot.send_group_msg(
+                    group_id=group_id, message=f"⚠️ {user_name}，枪里没子弹！"
+                )
+                return
 
             # 重置超时
             await self._start_timeout(event, group_id)
@@ -883,6 +899,7 @@ class RevolverGunPlugin(Star):
             chambers = game["chambers"]
             current = game["current"]
             hit = chambers[current]
+            result_msg = ""
 
             if hit:
                 # 中弹
@@ -919,14 +936,14 @@ class RevolverGunPlugin(Star):
             else:
                 # 空弹
                 game["current"] = (current + 1) % CHAMBER_COUNT
-
                 logger.info(f"AI: 用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生")
-
                 # 使用YAML文本
-                miss_msg = text_manager.get_text(
+                result_msg = text_manager.get_text(
                     "miss_messages", sender_nickname=user_name
                 )
-                result_msg = miss_msg
+
+            # 发送初步结果
+            await event.bot.send_group_msg(group_id=group_id, message=result_msg)
 
             # 检查游戏结束
             remaining = sum(chambers)
@@ -941,13 +958,13 @@ class RevolverGunPlugin(Star):
                 logger.info(f"AI: 群 {group_id} 游戏结束")
                 # 使用YAML文本
                 end_msg = text_manager.get_text("game_end")
-                result_msg = f"🏁 {end_msg}\n🔄 再来一局？"
-
-            return result_msg
+                await event.bot.send_group_msg(
+                    group_id=group_id, message=f"🏁 {end_msg}\n🔄 再来一局？"
+                )
 
         except Exception as e:
             logger.error(f"AI参与游戏失败: {e}")
-            return "❌ 操作失败，请重试"
+            await event.bot.send_group_msg(group_id=group_id, message="❌ 操作失败，请重试")
 
     async def ai_check_status(self, event: AstrMessageEvent):
         """AI查询游戏状态 - 供AI工具调用
@@ -955,30 +972,30 @@ class RevolverGunPlugin(Star):
         Args:
             event: 消息事件对象
         """
-        try:
-            group_id = self._get_group_id(event)
-            if not group_id:
-                return "❌ 仅限群聊使用"
+        group_id = self._get_group_id(event)
+        if not group_id:
+            logger.warning("AI工具无法获取group_id")
+            return
 
+        try:
             game = self.group_games.get(group_id)
             if not game:
-                return "🔍 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
-
-            chambers = game["chambers"]
-            current = game["current"]
-            remaining = sum(chambers)
-
-            status = "🎯 有子弹" if chambers[current] else "🍀 安全"
-
-            return (
-                f"🔫 游戏进行中\n"
-                f"📊 剩余子弹：{remaining}发\n"
-                f"🎯 当前弹膛：第{current + 1}膛\n"
-                f"{status}"
-            )
+                response_text = "🔍 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
+            else:
+                chambers = game["chambers"]
+                current = game["current"]
+                remaining = sum(chambers)
+                status = "🎯 有子弹" if chambers[current] else "🍀 安全"
+                response_text = (
+                    f"🔫 游戏进行中\n"
+                    f"📊 剩余子弹：{remaining}发\n"
+                    f"🎯 当前弹膛：第{current + 1}膛\n"
+                    f"{status}"
+                )
+            await event.bot.send_group_msg(group_id=group_id, message=response_text)
         except Exception as e:
             logger.error(f"AI查询状态失败: {e}")
-            return "❌ 查询失败，请重试"
+            await event.bot.send_group_msg(group_id=group_id, message="❌ 查询失败，请重试")
 
     async def terminate(self):
         """插件卸载清理
