@@ -31,7 +31,7 @@ class RevolverGameTool(FunctionTool, BaseRevolverTool):
 
     def __init__(self, plugin_instance=None):
         """初始化统一触发器工具
-
+ha
         Args:
             plugin_instance: 插件实例，用于触发游戏逻辑
         """

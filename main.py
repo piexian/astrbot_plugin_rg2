@@ -12,7 +12,7 @@ PLUGIN_AUTHOR = "piexian"
 PLUGIN_DESCRIPTION = (
     "一个刺激的群聊轮盘赌游戏插件，支持管理员装填子弹、用户开枪对决、随机走火等功能"
 )
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.1.0"  # 默认版本，将从metadata.yaml读取
 PLUGIN_REPO = "https://github.com/piexian/astrbot_plugin_rg2"
 
 # 文本管理器（延迟初始化）
@@ -51,6 +51,9 @@ class RevolverGunPlugin(Star):
         self.context = context
         self.config = config or {}
 
+        # 读取插件版本
+        self._load_plugin_version()
+
         # 游戏状态管理
         self.group_games: Dict[int, Dict] = {}
         self.group_misfire: Dict[int, bool] = {}
@@ -58,7 +61,6 @@ class RevolverGunPlugin(Star):
 
         # AI触发器事件队列
         self.ai_trigger_queue: Dict[str, Dict] = {}
-        self.ai_trigger_tasks: Dict[str, asyncio.Task] = {}
 
         # 数据持久化
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_rg2")
@@ -82,6 +84,31 @@ class RevolverGunPlugin(Star):
 
         # 注册函数工具
         self._register_function_tools()
+
+    def _load_plugin_version(self):
+        """从metadata.yaml读取插件版本"""
+        try:
+            import yaml
+            import os
+
+            # 获取插件目录路径
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            metadata_path = os.path.join(current_dir, "metadata.yaml")
+
+            if os.path.exists(metadata_path):
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = yaml.safe_load(f)
+                    self.plugin_version = metadata.get("version", PLUGIN_VERSION)
+                    logger.info(f"插件版本从metadata.yaml读取: {self.plugin_version}")
+            else:
+                self.plugin_version = PLUGIN_VERSION
+                logger.warning(
+                    f"未找到metadata.yaml，使用默认版本: {self.plugin_version}"
+                )
+
+        except Exception as e:
+            self.plugin_version = PLUGIN_VERSION
+            logger.error(f"读取插件版本失败，使用默认版本: {e}")
 
     def _init_text_manager(self):
         """初始化文本管理器"""
@@ -824,26 +851,6 @@ class RevolverGunPlugin(Star):
             "timestamp": datetime.datetime.now(),
         }
 
-        # 设置超时任务
-        timeout = self.ai_trigger_delay
-
-        async def timeout_check():
-            try:
-                await asyncio.sleep(timeout)
-                if unique_id in self.ai_trigger_queue:
-                    # 超时，执行触发
-                    logger.info(f"AI trigger timeout, executing: {unique_id}")
-                    await self._execute_ai_trigger(unique_id)
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"AI trigger timeout check failed: {e}")
-
-        # 启动超时任务
-        if unique_id in self.ai_trigger_tasks:
-            self.ai_trigger_tasks[unique_id].cancel()
-        self.ai_trigger_tasks[unique_id] = asyncio.create_task(timeout_check())
-
     async def _execute_ai_trigger(self, unique_id: str):
         """执行AI触发的操作
 
@@ -854,12 +861,6 @@ class RevolverGunPlugin(Star):
             return
 
         trigger_data = self.ai_trigger_queue.pop(unique_id)
-
-        # 取消超时任务
-        if unique_id in self.ai_trigger_tasks:
-            task = self.ai_trigger_tasks.pop(unique_id)
-            if not task.done():
-                task.cancel()
 
         action = trigger_data["action"]
         event = trigger_data["event"]
@@ -893,10 +894,8 @@ class RevolverGunPlugin(Star):
 
             # 检查是否有待处理的触发器
             if unique_id in self.ai_trigger_queue:
-                # 添加短延迟，确保AI消息先发送出去
-                delay = min(
-                    2, max(0.5, self.ai_trigger_delay * 0.2)
-                )  # 使用配置延迟的20%，最小0.5秒，最大2秒
+                # 使用配置的延迟时间
+                delay = self.ai_trigger_delay
                 logger.info(
                     f"Decorating result, waiting {delay}s before executing AI trigger: {unique_id}"
                 )
@@ -1133,15 +1132,9 @@ class RevolverGunPlugin(Star):
             num_configs = len(self.group_misfire)
             num_tasks = len(self.timeout_tasks)
             num_ai_triggers = len(self.ai_trigger_queue)
-            num_ai_tasks = len(self.ai_trigger_tasks)
 
             # 取消所有超时任务
             for task in self.timeout_tasks.values():
-                if not task.done():
-                    task.cancel()
-
-            # 取消所有AI触发器任务
-            for task in self.ai_trigger_tasks.values():
                 if not task.done():
                     task.cancel()
 
@@ -1150,15 +1143,13 @@ class RevolverGunPlugin(Star):
             self.group_misfire.clear()
             self.timeout_tasks.clear()
             self.ai_trigger_queue.clear()
-            self.ai_trigger_tasks.clear()
 
             # 记录卸载日志
-            logger.info("左轮手枪插件 v1.0 已安全卸载")
+            logger.info(f"左轮手枪插件 v{self.plugin_version} 已安全卸载")
             logger.info(f"清理了 {num_games} 个游戏状态")
             logger.info(f"清理了 {num_configs} 个群配置")
             logger.info(f"取消了 {num_tasks} 个超时任务")
             logger.info(f"清理了 {num_ai_triggers} 个AI触发器")
-            logger.info(f"取消了 {num_ai_tasks} 个AI触发器任务")
         except Exception as e:
             logger.error(f"插件卸载失败: {e}")
             # 即使清理失败也不抛出异常，确保插件能够卸载
