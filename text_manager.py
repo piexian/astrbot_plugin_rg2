@@ -93,7 +93,7 @@ class TextManager:
             "trigger_descriptions": "扳机扣动，枪声炸响",
             "miss_messages": "咔哒！{sender_nickname} 空弹逃生！",
             "game_status": "游戏进行中",
-            "load_messages": "子弹上膛，杀机四伏",
+            "load_messages": "{bullet_count}弹上膛，杀机四伏",
             "game_end": "游戏结束，胜负已分",
             "timeout": "时间到！游戏结束",
             "warnings": "警告：极度危险！",

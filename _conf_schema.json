@@ -29,6 +29,12 @@
     "default": false,
     "hint": "开启后新群第一次使用会自动启用走火功能"
   },
+  "ai_trigger_delay": {
+    "description": "AI工具触发延迟时间（秒）",
+    "type": "int",
+    "default": 2,
+    "hint": "AI触发工具后的等待时间。修改后需重载插件生效"
+  },
   "misfire_descriptions": {
     "description": "自定义走火描述文本（每行一条）",
     "type": "list",

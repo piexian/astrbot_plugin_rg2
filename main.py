@@ -12,7 +12,7 @@ PLUGIN_AUTHOR = "piexian"
 PLUGIN_DESCRIPTION = (
     "一个刺激的群聊轮盘赌游戏插件，支持管理员装填子弹、用户开枪对决、随机走火等功能"
 )
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.1.0"  # 默认版本，将从metadata.yaml读取
 PLUGIN_REPO = "https://github.com/piexian/astrbot_plugin_rg2"
 
 # 文本管理器（延迟初始化）
@@ -26,7 +26,7 @@ except ImportError:
     EventMessageType = None
 
 CHAMBER_COUNT = 6
-DEFAULT_TIMEOUT = 120
+DEFAULT_TIMEOUT = 300
 DEFAULT_MISFIRE_PROB = 0.003
 DEFAULT_MIN_BAN = 60
 DEFAULT_MAX_BAN = 300
@@ -51,10 +51,17 @@ class RevolverGunPlugin(Star):
         self.context = context
         self.config = config or {}
 
+        # 读取插件版本
+        self._load_plugin_version()
+
         # 游戏状态管理
         self.group_games: Dict[int, Dict] = {}
         self.group_misfire: Dict[int, bool] = {}
         self.timeout_tasks: Dict[int, asyncio.Task] = {}
+
+        # AI触发器事件队列
+        self.ai_trigger_queue: Dict[str, Dict] = {}
+        self.ai_trigger_counter = 0  # 用于生成一致的ID
 
         # 数据持久化
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_rg2")
@@ -72,9 +79,37 @@ class RevolverGunPlugin(Star):
         self.min_ban = self.config.get("min_ban_seconds", DEFAULT_MIN_BAN)
         self.max_ban = self.config.get("max_ban_seconds", DEFAULT_MAX_BAN)
         self.default_misfire = self.config.get("misfire_enabled_by_default", False)
+        self.ai_trigger_delay = self.config.get(
+            "ai_trigger_delay", 2
+        )  # AI工具触发延迟（秒）
 
         # 注册函数工具
         self._register_function_tools()
+
+    def _load_plugin_version(self):
+        """从metadata.yaml读取插件版本"""
+        try:
+            import yaml
+            import os
+
+            # 获取插件目录路径
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            metadata_path = os.path.join(current_dir, "metadata.yaml")
+
+            if os.path.exists(metadata_path):
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = yaml.safe_load(f)
+                    self.plugin_version = metadata.get("version", PLUGIN_VERSION)
+                    logger.info(f"插件版本从metadata.yaml读取: {self.plugin_version}")
+            else:
+                self.plugin_version = PLUGIN_VERSION
+                logger.warning(
+                    f"未找到metadata.yaml，使用默认版本: {self.plugin_version}"
+                )
+
+        except Exception as e:
+            self.plugin_version = PLUGIN_VERSION
+            logger.error(f"读取插件版本失败，使用默认版本: {e}")
 
     def _init_text_manager(self):
         """初始化文本管理器"""
@@ -98,26 +133,20 @@ class RevolverGunPlugin(Star):
     def _register_function_tools(self):
         """注册函数工具到AstrBot"""
         try:
-            from .tools.revolver_tools import (
-                StartRevolverGameTool,
-                JoinRevolverGameTool,
-                CheckRevolverStatusTool,
-            )
+            from .tools.revolver_game_tool import RevolverGameTool
 
-            # 初始化工具并传递插件实例
-            start_tool = StartRevolverGameTool(plugin_instance=self)
-            join_tool = JoinRevolverGameTool(plugin_instance=self)
-            check_tool = CheckRevolverStatusTool(plugin_instance=self)
+            # 初始化统一工具并传递插件实例
+            revolver_tool = RevolverGameTool(plugin_instance=self)
 
             # >= v4.5.1 使用新的注册方式
             if hasattr(self.context, "add_llm_tools"):
-                self.context.add_llm_tools(start_tool, join_tool, check_tool)
+                self.context.add_llm_tools(revolver_tool)
             else:
                 # < v4.5.1 兼容旧版本
                 tool_mgr = self.context.provider_manager.llm_tools
-                tool_mgr.func_list.extend([start_tool, join_tool, check_tool])
+                tool_mgr.func_list.append(revolver_tool)
 
-            logger.info("左轮手枪函数工具注册成功")
+            logger.info("左轮手枪统一触发器工具注册成功")
         except Exception as e:
             logger.error(f"注册函数工具失败: {e}", exc_info=True)
 
@@ -462,7 +491,9 @@ class RevolverGunPlugin(Star):
             logger.info(f"用户 {user_name} 在群 {group_id} 装填 {bullet_count} 发子弹")
 
             # 使用YAML文本
-            load_msg = text_manager.get_text("load_messages", sender_nickname=user_name)
+            load_msg = text_manager.get_text(
+                "load_messages", sender_nickname=user_name, bullet_count=bullet_count
+            )
             yield event.plain_result(
                 f"🔫 {load_msg}\n"
                 f"💀 {CHAMBER_COUNT} 弹膛，生死一线！\n"
@@ -804,6 +835,104 @@ class RevolverGunPlugin(Star):
         self.timeout_tasks[group_id] = asyncio.create_task(timeout_check())
         logger.debug(f"群 {group_id} 超时任务已启动，{self.timeout} 秒后触发")
 
+    # ========== AI触发器管理 ==========
+
+    def _register_ai_trigger(self, action: str, event: AstrMessageEvent) -> str:
+        """注册AI触发器等待事件
+
+        Args:
+            action: 操作类型
+            event: 消息事件对象
+
+        Returns:
+            生成的唯一标识符
+        """
+        # 使用插件内部计数器生成一致的ID
+        self.ai_trigger_counter += 1
+        unique_id = f"trigger_{self.ai_trigger_counter}_{event.get_sender_id()}"
+
+        logger.info(f"AI trigger registered: {unique_id}, action={action}")
+        self.ai_trigger_queue[unique_id] = {
+            "action": action,
+            "event": event,
+            "timestamp": datetime.datetime.now(),
+        }
+
+        return unique_id
+
+    async def _execute_ai_trigger(self, unique_id: str):
+        """执行AI触发的操作
+
+        Args:
+            unique_id: 唯一标识符
+        """
+        if unique_id not in self.ai_trigger_queue:
+            return
+
+        trigger_data = self.ai_trigger_queue.pop(unique_id)
+
+        action = trigger_data["action"]
+        event = trigger_data["event"]
+
+        try:
+            execution_time = datetime.datetime.now() - trigger_data["timestamp"]
+            logger.info(
+                f"Executing AI trigger: {unique_id}, action={action}, wait_time={execution_time.total_seconds():.1f}s"
+            )
+
+            if action == "start":
+                await self.ai_start_game(event, None)
+            elif action == "join":
+                await self.ai_join_game(event)
+            elif action == "status":
+                await self.ai_check_status(event)
+
+        except Exception as e:
+            logger.error(f"AI trigger execution failed: {e}")
+
+    @filter.on_decorating_result(priority=5)
+    async def _on_decorating_result(self, event: AstrMessageEvent):
+        """消息装饰钩子 - 标记AI消息即将发送
+
+        Args:
+            event: 消息事件对象
+        """
+        try:
+            # 只记录有AI触发器待处理，但不执行
+            if self.ai_trigger_queue:
+                logger.info(
+                    f"Decorating result, {len(self.ai_trigger_queue)} triggers pending"
+                )
+        except Exception as e:
+            logger.error(f"Decorating result hook failed: {e}")
+
+    @filter.after_message_sent(priority=10)
+    async def _on_message_sent(self, event: AstrMessageEvent):
+        """消息发送后钩子 - 执行待处理的AI触发器
+
+        Args:
+            event: 消息事件对象
+        """
+        try:
+            # 执行最早的待处理触发器
+            if self.ai_trigger_queue:
+                # 获取最早的触发器
+                oldest_id = min(
+                    self.ai_trigger_queue.keys(),
+                    key=lambda k: self.ai_trigger_queue[k]["timestamp"],
+                )
+
+                logger.info(f"Message sent, executing AI trigger: {oldest_id}")
+
+                # 使用配置的延迟时间
+                delay = self.ai_trigger_delay
+                logger.info(f"Waiting {delay}s before executing")
+                await asyncio.sleep(delay)
+                await self._execute_ai_trigger(oldest_id)
+
+        except Exception as e:
+            logger.error(f"Message sent hook failed: {e}")
+
     # ========== AI工具调用方法 ==========
 
     async def ai_start_game(
@@ -858,7 +987,9 @@ class RevolverGunPlugin(Star):
             logger.info(f"AI: 用户 {user_name} 在群 {group_id} 装填 {bullets} 发子弹")
 
             # 使用YAML文本
-            load_msg = text_manager.get_text("load_messages", sender_nickname=user_name)
+            load_msg = text_manager.get_text(
+                "load_messages", sender_nickname=user_name, bullet_count=bullets
+            )
             response_text = f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 谁敢扣动扳机？\n⚡ 限时 {self.timeout} 秒！"
             await event.bot.send_group_msg(group_id=group_id, message=response_text)
 
@@ -964,7 +1095,9 @@ class RevolverGunPlugin(Star):
 
         except Exception as e:
             logger.error(f"AI参与游戏失败: {e}")
-            await event.bot.send_group_msg(group_id=group_id, message="❌ 操作失败，请重试")
+            await event.bot.send_group_msg(
+                group_id=group_id, message="❌ 操作失败，请重试"
+            )
 
     async def ai_check_status(self, event: AstrMessageEvent):
         """AI查询游戏状态 - 供AI工具调用
@@ -995,7 +1128,9 @@ class RevolverGunPlugin(Star):
             await event.bot.send_group_msg(group_id=group_id, message=response_text)
         except Exception as e:
             logger.error(f"AI查询状态失败: {e}")
-            await event.bot.send_group_msg(group_id=group_id, message="❌ 查询失败，请重试")
+            await event.bot.send_group_msg(
+                group_id=group_id, message="❌ 查询失败，请重试"
+            )
 
     async def terminate(self):
         """插件卸载清理
@@ -1007,6 +1142,7 @@ class RevolverGunPlugin(Star):
             num_games = len(self.group_games)
             num_configs = len(self.group_misfire)
             num_tasks = len(self.timeout_tasks)
+            num_ai_triggers = len(self.ai_trigger_queue)
 
             # 取消所有超时任务
             for task in self.timeout_tasks.values():
@@ -1017,12 +1153,14 @@ class RevolverGunPlugin(Star):
             self.group_games.clear()
             self.group_misfire.clear()
             self.timeout_tasks.clear()
+            self.ai_trigger_queue.clear()
 
             # 记录卸载日志
-            logger.info("左轮手枪插件 v1.0 已安全卸载")
+            logger.info(f"左轮手枪插件 v{self.plugin_version} 已安全卸载")
             logger.info(f"清理了 {num_games} 个游戏状态")
             logger.info(f"清理了 {num_configs} 个群配置")
             logger.info(f"取消了 {num_tasks} 个超时任务")
+            logger.info(f"清理了 {num_ai_triggers} 个AI触发器")
         except Exception as e:
             logger.error(f"插件卸载失败: {e}")
             # 即使清理失败也不抛出异常，确保插件能够卸载
