@@ -3,7 +3,7 @@
 基于 AstrBot 官方插件规范开发的群聊轮盘赌游戏插件，采用现代化代码架构，提供刺激的左轮手枪对决体验。
 
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-blue.svg)](https://docs.astrbot.app/)
-[![Version](https://img.shields.io/badge/version-1.2.0-green.svg)](https://github.com/piexian/astrbot_plugin_rg)
+[![Version](https://img.shields.io/badge/version-1.2.0-green.svg)](https://github.com/piexian/astrbot_plugin_rg2)
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 
 ## ✨ 核心特性
