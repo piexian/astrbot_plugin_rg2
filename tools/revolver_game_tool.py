@@ -21,7 +21,7 @@ class BaseRevolverTool:
 
 
 class RevolverGameTool(FunctionTool, BaseRevolverTool):
-    """AI统一触发器工具 - 左轮手枪游戏控制器
+    """AI统一触发器工具 - 左轮手枪游戏控制器w
 
     通过action参数控制不同操作：
     - start: 启动新游戏

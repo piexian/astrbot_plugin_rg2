@@ -893,7 +893,14 @@ class RevolverGunPlugin(Star):
 
             # 检查是否有待处理的触发器
             if unique_id in self.ai_trigger_queue:
-                logger.info(f"Decorating result, executing AI trigger: {unique_id}")
+                # 添加短延迟，确保AI消息先发送出去
+                delay = min(
+                    2, max(0.5, self.ai_trigger_delay * 0.2)
+                )  # 使用配置延迟的20%，最小0.5秒，最大2秒
+                logger.info(
+                    f"Decorating result, waiting {delay}s before executing AI trigger: {unique_id}"
+                )
+                await asyncio.sleep(delay)
                 await self._execute_ai_trigger(unique_id)
 
         except Exception as e:
