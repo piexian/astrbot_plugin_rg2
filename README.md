@@ -3,18 +3,17 @@
 基于 AstrBot 官方插件规范开发的群聊轮盘赌游戏插件，采用现代化代码架构，提供刺激的左轮手枪对决体验。
 
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-blue.svg)](https://docs.astrbot.app/)
-[![Version](https://img.shields.io/badge/version-1.2.0-green.svg)](https://github.com/piexian/astrbot_plugin_rg2)
-[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-1.2.5-green.svg)](https://github.com/piexian/astrbot_plugin_rg2)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
 ## ✨ 核心特性
 
 - **🎯 规范开发**：严格遵循AstrBot官方插件开发规范
 - **🤖 AI交互**：采用纯触发器架构，支持自然语言开启游戏、参与对决、查询状态
 - **⚡ 指令优化**：使用指令组结构，逻辑清晰
-- **🔒 权限控制**：管理员专用功能，安全可靠
+- **⚙️ 规则自定义**：支持自定义弹膛数、固定装弹、禁止满膛等进阶规则
 - **🎲 随机机制**：随机装填、随机走火、随机惩罚
 - **⏰ 超时机制**：自动结束闲置游戏（300秒超时）
-- **🛡️ 错误处理**：完善的异常捕获和日志记录
 - **📊 状态管理**：高效的并发游戏状态管理
 
 ## 📋 更新日志
@@ -119,6 +118,11 @@ git clone https://github.com/piexian/astrbot_plugin_rg2
 | `misfire_probability` | 随机走火概率（0.0-1.0） | 0.003 | 0-0.01 |
 | `min_ban_seconds` | 最小禁言时长（秒） | 60 | 30-120 |
 | `max_ban_seconds` | 最大禁言时长（秒） | 300 | 120-600 |
+| `max_bullet_count` | 最大子弹数（即弹膛总数） | 6 | 1-100 |
+| `fixed_bullet_count` | 固定装弹数（0为随机） | 0 | 0-max_bullet_count |
+| `no_full_chamber` | 禁止满膛（随机装填时） | false | true/false |
+| `hide_bullet_count` | 隐藏装弹具体数量 | false | true/false |
+| `end_on_full_rotation` | 弹膛全实弹时直接结束 | false | true/false |
 | `misfire_enabled_by_default` | 新群默认开启走火 | false | true/false |
 | `ai_trigger_delay` | AI工具触发延迟（秒） | 2 | 任意正整数 |
 
@@ -222,6 +226,7 @@ AI：🎯 用户名称 挑战命运！
 
 详细的版本更新日志请查看 [CHANGELOG.md](./CHANGELOG.md) 文件。
 
+- **v1.2.5** (2026-01-22) - 自定义规则增强：支持弹膛数自定义、固定装弹、隐藏子弹数及逻辑重构
 - **v1.2.0** (2025-11-16) - 重大功能重构：统一AI工具、事件驱动触发机制、动态版本管理
 - **v1.1.1** (2025-11-14) - 优化 AI 工具为纯触发器模式，简化架构，提升性能
 - **v1.1.0** (2024-11-13) - 修复 AI 工具问题，添加参数支持
