@@ -29,6 +29,36 @@
     "default": false,
     "hint": "开启后新群第一次使用会自动启用走火功能"
   },
+  "end_on_full_rotation": {
+    "description": "全是实弹时结束游戏",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后当剩余弹膛全是实弹（没有空膛位）时立即结束游戏"
+  },
+  "max_bullet_count": {
+    "description": "最大子弹数量（同时也是弹膛数）",
+    "type": "int",
+    "default": 6,
+    "hint": "随机装填时子弹数量的上限，也决定弹膛总数，可超过6"
+  },
+  "no_full_chamber": {
+    "description": "禁止满膛（随机装填时不会装满）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后随机装填最多只会装 最大子弹数 - 1 发"
+  },
+  "fixed_bullet_count": {
+    "description": "固定装弹数量（0表示使用随机）",
+    "type": "int",
+    "default": 0,
+    "hint": "设置后 /装填 会使用该固定值，设为0则随机装填"
+  },
+  "hide_bullet_count": {
+    "description": "隐藏装弹数量",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后装填时不显示具体子弹数量，增加游戏刺激性"
+  },
   "ai_trigger_delay": {
     "description": "AI工具触发延迟时间（秒）",
     "type": "int",

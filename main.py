@@ -1,10 +1,10 @@
-import random
-import datetime
 import asyncio
-from typing import Dict, List, Optional
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register, StarTools
+import datetime
+import random
+
 from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star, StarTools, register
 
 # 插件元数据
 PLUGIN_NAME = "astrbot_plugin_rg2"
@@ -25,11 +25,16 @@ except ImportError:
     # 兼容旧版本
     EventMessageType = None
 
-CHAMBER_COUNT = 6
+DEFAULT_CHAMBER_COUNT = 6
 DEFAULT_TIMEOUT = 300
 DEFAULT_MISFIRE_PROB = 0.003
 DEFAULT_MIN_BAN = 60
 DEFAULT_MAX_BAN = 300
+DEFAULT_MAX_BULLET_COUNT = 6
+DEFAULT_FIXED_BULLET_COUNT = 0
+DEFAULT_NO_FULL_CHAMBER = False
+DEFAULT_END_ON_FULL_ROTATION = False
+DEFAULT_HIDE_BULLET_COUNT = False
 
 
 @register(
@@ -40,7 +45,7 @@ DEFAULT_MAX_BAN = 300
     PLUGIN_REPO,
 )
 class RevolverGunPlugin(Star):
-    def __init__(self, context: Context, config: Optional[Dict] = None):
+    def __init__(self, context: Context, config: dict | None = None):
         """初始化左轮手枪插件
 
         Args:
@@ -55,12 +60,12 @@ class RevolverGunPlugin(Star):
         self._load_plugin_version()
 
         # 游戏状态管理
-        self.group_games: Dict[int, Dict] = {}
-        self.group_misfire: Dict[int, bool] = {}
-        self.timeout_tasks: Dict[int, asyncio.Task] = {}
+        self.group_games: dict[int, dict] = {}
+        self.group_misfire: dict[int, bool] = {}
+        self.timeout_tasks: dict[int, asyncio.Task] = {}
 
         # AI触发器事件队列
-        self.ai_trigger_queue: Dict[str, Dict] = {}
+        self.ai_trigger_queue: dict[str, dict] = {}
         self.ai_trigger_counter = 0  # 用于生成一致的ID
 
         # 数据持久化
@@ -83,21 +88,40 @@ class RevolverGunPlugin(Star):
             "ai_trigger_delay", 2
         )  # AI工具触发延迟（秒）
 
+        # 新增配置参数
+        self.max_bullet_count = self.config.get(
+            "max_bullet_count", DEFAULT_MAX_BULLET_COUNT
+        )
+        self.chamber_count = self.max_bullet_count  # 弹膛数等于最大子弹数
+        self.fixed_bullet_count = self.config.get(
+            "fixed_bullet_count", DEFAULT_FIXED_BULLET_COUNT
+        )
+        self.no_full_chamber = self.config.get(
+            "no_full_chamber", DEFAULT_NO_FULL_CHAMBER
+        )
+        self.end_on_full_rotation = self.config.get(
+            "end_on_full_rotation", DEFAULT_END_ON_FULL_ROTATION
+        )
+        self.hide_bullet_count = self.config.get(
+            "hide_bullet_count", DEFAULT_HIDE_BULLET_COUNT
+        )
+
         # 注册函数工具
         self._register_function_tools()
 
     def _load_plugin_version(self):
         """从metadata.yaml读取插件版本"""
         try:
-            import yaml
             import os
+
+            import yaml
 
             # 获取插件目录路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
             metadata_path = os.path.join(current_dir, "metadata.yaml")
 
             if os.path.exists(metadata_path):
-                with open(metadata_path, "r", encoding="utf-8") as f:
+                with open(metadata_path, encoding="utf-8") as f:
                     metadata = yaml.safe_load(f)
                     self.plugin_version = metadata.get("version", PLUGIN_VERSION)
                     logger.info(f"插件版本从metadata.yaml读取: {self.plugin_version}")
@@ -150,7 +174,7 @@ class RevolverGunPlugin(Star):
         except Exception as e:
             logger.error(f"注册函数工具失败: {e}", exc_info=True)
 
-    def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
+    def _get_group_id(self, event: AstrMessageEvent) -> int | None:
         """获取群ID
 
         Args:
@@ -242,7 +266,7 @@ class RevolverGunPlugin(Star):
             import json
 
             if self.config_file.exists():
-                with open(self.config_file, "r", encoding="utf-8") as f:
+                with open(self.config_file, encoding="utf-8") as f:
                     data = json.load(f)
                     self.group_misfire.update(data)
                 logger.info(f"已加载 {len(data)} 个群的走火配置")
@@ -263,7 +287,7 @@ class RevolverGunPlugin(Star):
         except Exception as e:
             logger.error(f"保存走火配置失败: {e}")
 
-    def _create_chambers(self, bullet_count: int) -> List[bool]:
+    def _create_chambers(self, bullet_count: int) -> list[bool]:
         """创建弹膛状态
 
         Args:
@@ -272,9 +296,9 @@ class RevolverGunPlugin(Star):
         Returns:
             弹膛状态列表，True表示有子弹
         """
-        chambers = [False] * CHAMBER_COUNT
+        chambers = [False] * self.chamber_count
         if bullet_count > 0:
-            positions = random.sample(range(CHAMBER_COUNT), bullet_count)
+            positions = random.sample(range(self.chamber_count), bullet_count)
             for pos in positions:
                 chambers[pos] = True
         return chambers
@@ -282,12 +306,26 @@ class RevolverGunPlugin(Star):
     def _get_random_bullet_count(self) -> int:
         """获取随机子弹数量
 
-        Returns:
-            1-6之间的随机整数
-        """
-        return random.randint(1, CHAMBER_COUNT)
+        根据配置决定随机范围：
+        - 如果设置了固定数量，返回固定值
+        - 如果开启了禁止满膛，最大值为 max_bullet_count - 1
+        - 否则范围为 1 到 max_bullet_count
 
-    def _parse_bullet_count(self, message: str) -> Optional[int]:
+        Returns:
+            子弹数量
+        """
+        # 如果设置了固定装弹数量
+        if self.fixed_bullet_count > 0:
+            return min(self.fixed_bullet_count, self.max_bullet_count)
+
+        # 计算随机范围
+        max_count = self.max_bullet_count
+        if self.no_full_chamber and max_count > 1:
+            max_count -= 1
+
+        return random.randint(1, max_count)
+
+    def _parse_bullet_count(self, message: str) -> int | None:
         """解析子弹数量
 
         Args:
@@ -302,7 +340,7 @@ class RevolverGunPlugin(Star):
 
         try:
             count = int(parts[1])
-            if 1 <= count <= CHAMBER_COUNT:
+            if 1 <= count <= self.chamber_count:
                 return count
         except (ValueError, IndexError):
             pass
@@ -483,6 +521,7 @@ class RevolverGunPlugin(Star):
                 "chambers": chambers,
                 "current": 0,
                 "start_time": datetime.datetime.now(),
+                "shot_count": 0,  # 记录已射击次数，用于弹膛轮转结束判断
             }
 
             # 设置超时
@@ -490,13 +529,21 @@ class RevolverGunPlugin(Star):
 
             logger.info(f"用户 {user_name} 在群 {group_id} 装填 {bullet_count} 发子弹")
 
-            # 使用YAML文本
-            load_msg = text_manager.get_text(
-                "load_messages", sender_nickname=user_name, bullet_count=bullet_count
-            )
+            # 构建装填消息
+            if self.hide_bullet_count:
+                # 隐藏子弹数量
+                load_msg = text_manager.get_text(
+                    "load_messages", sender_nickname=user_name, bullet_count="?"
+                )
+            else:
+                load_msg = text_manager.get_text(
+                    "load_messages",
+                    sender_nickname=user_name,
+                    bullet_count=bullet_count,
+                )
             yield event.plain_result(
                 f"🔫 {load_msg}\n"
-                f"💀 {CHAMBER_COUNT} 弹膛，生死一线！\n"
+                f"💀 {self.chamber_count} 弹膛，生死一线！\n"
                 f"⚡ 限时 {self.timeout} 秒！"
             )
         except Exception as e:
@@ -533,10 +580,13 @@ class RevolverGunPlugin(Star):
             chambers = game["chambers"]
             current = game["current"]
 
+            # 增加射击计数
+            game["shot_count"] = game.get("shot_count", 0) + 1
+
             if chambers[current]:
                 # 中弹
                 chambers[current] = False
-                game["current"] = (current + 1) % CHAMBER_COUNT
+                game["current"] = (current + 1) % self.chamber_count
 
                 # 检查是否可禁言（管理员/群主免疫）
                 if not await self._is_user_bannable(event, user_id):
@@ -568,7 +618,7 @@ class RevolverGunPlugin(Star):
                     )
             else:
                 # 空弹
-                game["current"] = (current + 1) % CHAMBER_COUNT
+                game["current"] = (current + 1) % self.chamber_count
 
                 logger.info(f"用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生")
 
@@ -578,9 +628,20 @@ class RevolverGunPlugin(Star):
                 )
                 yield event.plain_result(miss_msg)
 
-            # 检查游戏结束
+            # 检查游戏结束条件
             remaining = sum(chambers)
+            should_end = False
+
             if remaining == 0:
+                # 所有子弹都被击发
+                should_end = True
+            elif self.end_on_full_rotation:
+                # 检查剩余弹膛是否全是实弹（接下来必中）
+                remaining_chambers = self.chamber_count - game.get("shot_count", 0)
+                if remaining == remaining_chambers:
+                    should_end = True
+
+            if should_end:
                 # 清理超时任务（如果存在）
                 if group_id in self.timeout_tasks:
                     self.timeout_tasks[group_id].cancel()
@@ -935,9 +996,7 @@ class RevolverGunPlugin(Star):
 
     # ========== AI工具调用方法 ==========
 
-    async def ai_start_game(
-        self, event: AstrMessageEvent, bullets: Optional[int] = None
-    ):
+    async def ai_start_game(self, event: AstrMessageEvent, bullets: int | None = None):
         """AI启动游戏 - 供AI工具调用
 
         Args:
@@ -961,7 +1020,7 @@ class RevolverGunPlugin(Star):
                 return
 
             # 解析子弹数量
-            if bullets is not None and 1 <= bullets <= CHAMBER_COUNT:
+            if bullets is not None and 1 <= bullets <= self.chamber_count:
                 # 用户指定了子弹数量，检查是否是管理员
                 if not await self._is_group_admin(event):
                     await event.bot.send_group_msg(
@@ -979,6 +1038,7 @@ class RevolverGunPlugin(Star):
                 "chambers": chambers,
                 "current": 0,
                 "start_time": datetime.datetime.now(),
+                "shot_count": 0,  # 记录已射击次数
             }
 
             # 设置超时
@@ -986,11 +1046,16 @@ class RevolverGunPlugin(Star):
 
             logger.info(f"AI: 用户 {user_name} 在群 {group_id} 装填 {bullets} 发子弹")
 
-            # 使用YAML文本
-            load_msg = text_manager.get_text(
-                "load_messages", sender_nickname=user_name, bullet_count=bullets
-            )
-            response_text = f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 谁敢扣动扳机？\n⚡ 限时 {self.timeout} 秒！"
+            # 构建装填消息
+            if self.hide_bullet_count:
+                load_msg = text_manager.get_text(
+                    "load_messages", sender_nickname=user_name, bullet_count="?"
+                )
+            else:
+                load_msg = text_manager.get_text(
+                    "load_messages", sender_nickname=user_name, bullet_count=bullets
+                )
+            response_text = f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 {self.chamber_count} 弹膛，谁敢扣动扳机？\n⚡ 限时 {self.timeout} 秒！"
             await event.bot.send_group_msg(group_id=group_id, message=response_text)
 
         except Exception as e:
@@ -1032,10 +1097,13 @@ class RevolverGunPlugin(Star):
             hit = chambers[current]
             result_msg = ""
 
+            # 增加射击计数
+            game["shot_count"] = game.get("shot_count", 0) + 1
+
             if hit:
                 # 中弹
                 chambers[current] = False
-                game["current"] = (current + 1) % CHAMBER_COUNT
+                game["current"] = (current + 1) % self.chamber_count
 
                 # 检查是否可禁言（管理员/群主免疫）
                 if not await self._is_user_bannable(event, user_id):
@@ -1066,7 +1134,7 @@ class RevolverGunPlugin(Star):
                     result_msg = f"💥 {trigger_msg}\n😱 {reaction_msg}\n{ban_msg}"
             else:
                 # 空弹
-                game["current"] = (current + 1) % CHAMBER_COUNT
+                game["current"] = (current + 1) % self.chamber_count
                 logger.info(f"AI: 用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生")
                 # 使用YAML文本
                 result_msg = text_manager.get_text(
@@ -1076,9 +1144,20 @@ class RevolverGunPlugin(Star):
             # 发送初步结果
             await event.bot.send_group_msg(group_id=group_id, message=result_msg)
 
-            # 检查游戏结束
+            # 检查游戏结束条件
             remaining = sum(chambers)
+            should_end = False
+
             if remaining == 0:
+                # 所有子弹都被击发
+                should_end = True
+            elif self.end_on_full_rotation:
+                # 检查剩余弹膛是否全是实弹（接下来必中）
+                remaining_chambers = self.chamber_count - game.get("shot_count", 0)
+                if remaining == remaining_chambers:
+                    should_end = True
+
+            if should_end:
                 # 清理超时任务（如果存在）
                 if group_id in self.timeout_tasks:
                     self.timeout_tasks[group_id].cancel()
