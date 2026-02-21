@@ -3,7 +3,7 @@
 基于 AstrBot 官方插件规范开发的群聊轮盘赌游戏插件，采用现代化代码架构，提供刺激的左轮手枪对决体验。
 
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-blue.svg)](https://docs.astrbot.app/)
-[![Version](https://img.shields.io/badge/version-1.2.5-green.svg)](https://github.com/piexian/astrbot_plugin_rg2)
+[![Version](https://img.shields.io/badge/version-1.2.6-green.svg)](https://github.com/piexian/astrbot_plugin_rg2)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
 ## ✨ 核心特性
@@ -23,8 +23,9 @@
 ## 🚀 快速开始
 
 ### 安装要求
-- AstrBot v4.5.0+
+- AstrBot v3.5.0+
 - Python 3.10+
+- 支持平台：NapCat（OneBot v11 协议）
 
 ### 安装插件
 
@@ -226,6 +227,7 @@ AI：🎯 用户名称 挑战命运！
 
 详细的版本更新日志请查看 [CHANGELOG.md](./CHANGELOG.md) 文件。
 
+- **v1.2.6** (2026-02-21) - 元数据更新：添加 AstrBot 版本要求和平台支持声明
 - **v1.2.5** (2026-01-22) - 自定义规则增强：支持弹膛数自定义、固定装弹、隐藏子弹数及逻辑重构
 - **v1.2.0** (2025-11-16) - 重大功能重构：统一AI工具、事件驱动触发机制、动态版本管理
 - **v1.1.1** (2025-11-14) - 优化 AI 工具为纯触发器模式，简化架构，提升性能
