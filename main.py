@@ -1,47 +1,38 @@
 import asyncio
 import datetime
+import json
+import os
 import random
+
+import yaml
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
-# 插件元数据
+from .text_manager import TextManager
+
+# 插件元数据（仅 register 装饰器使用，真实版本号从 metadata.yaml 读取）
 PLUGIN_NAME = "astrbot_plugin_rg2"
 PLUGIN_AUTHOR = "piexian"
 PLUGIN_DESCRIPTION = (
     "一个刺激的群聊轮盘赌游戏插件，支持管理员装填子弹、用户开枪对决、随机走火等功能"
 )
-PLUGIN_VERSION = "1.1.0"  # 默认版本，将从metadata.yaml读取
 PLUGIN_REPO = "https://github.com/piexian/astrbot_plugin_rg2"
-
-# 文本管理器（延迟初始化）
-text_manager = None
+_FALLBACK_VERSION = "1.1.0"
 
 # 导入事件类型
 try:
     from astrbot.core.star.filter.event_message_type import EventMessageType
 except ImportError:
-    # 兼容旧版本
-    EventMessageType = None
-
-DEFAULT_CHAMBER_COUNT = 6
-DEFAULT_TIMEOUT = 300
-DEFAULT_MISFIRE_PROB = 0.003
-DEFAULT_MIN_BAN = 60
-DEFAULT_MAX_BAN = 300
-DEFAULT_MAX_BULLET_COUNT = 6
-DEFAULT_FIXED_BULLET_COUNT = 0
-DEFAULT_NO_FULL_CHAMBER = False
-DEFAULT_END_ON_FULL_ROTATION = False
-DEFAULT_HIDE_BULLET_COUNT = False
+    EventMessageType = None  # 兼容旧版本
 
 
 @register(
     PLUGIN_NAME,
     PLUGIN_AUTHOR,
     PLUGIN_DESCRIPTION,
-    PLUGIN_VERSION,
+    _FALLBACK_VERSION,
     PLUGIN_REPO,
 )
 class RevolverGunPlugin(Star):
@@ -56,8 +47,8 @@ class RevolverGunPlugin(Star):
         self.context = context
         self.config = config or {}
 
-        # 读取插件版本
-        self._load_plugin_version()
+        # 读取插件版本（来自 metadata.yaml，失败回落到 _FALLBACK_VERSION）
+        self.plugin_version = self._load_plugin_version()
 
         # 游戏状态管理
         self.group_games: dict[int, dict] = {}
@@ -75,24 +66,36 @@ class RevolverGunPlugin(Star):
         # 加载持久化配置
         self._load_misfire_config()
 
-        # 初始化文本管理器
-        self._init_text_manager()
+        # 初始化文本管理器（构造失败时回落到空 TextManager，保证 get_text 始终可用）
+        try:
+            self.text_manager = TextManager(
+                custom_texts=self.config.get("custom_texts", []) or []
+            )
+            logger.info(
+                f"文本管理器初始化成功，已加载分类: {self.text_manager.categories}"
+            )
+        except Exception as e:
+            logger.error(f"文本管理器初始化失败，使用内置默认文本: {e}")
+            self.text_manager = TextManager.__new__(TextManager)
+            self.text_manager.texts = {}
+            self.text_manager.custom_texts = []
+            self.text_manager.yaml_path = None  # type: ignore[assignment]
 
         # 配置参数
-        self.timeout = self.config.get("timeout_seconds", DEFAULT_TIMEOUT)
-        self.misfire_prob = self.config.get("misfire_probability", DEFAULT_MISFIRE_PROB)
-        self.min_ban = self.config.get("min_ban_seconds", DEFAULT_MIN_BAN)
-        self.max_ban = self.config.get("max_ban_seconds", DEFAULT_MAX_BAN)
+        self.timeout = self.config.get("timeout_seconds", 120)
+        self.misfire_prob = self.config.get("misfire_probability", 0.003)
+        self.min_ban = self.config.get("min_ban_seconds", 60)
+        self.max_ban = self.config.get("max_ban_seconds", 300)
         self.default_misfire = self.config.get("misfire_enabled_by_default", False)
-        self.ai_trigger_delay = self.config.get(
-            "ai_trigger_delay", 2
-        )  # AI工具触发延迟（秒）
+        self.ai_trigger_delay = self.config.get("ai_trigger_delay", 2)
 
-        # 新增配置参数
-        self.max_bullet_count = self.config.get(
-            "max_bullet_count", DEFAULT_MAX_BULLET_COUNT
-        )
+        # 弹膛/装弹相关
+        self.max_bullet_count = self.config.get("max_bullet_count", 6)
         self.chamber_count = self.config.get("chamber_count", self.max_bullet_count)
+        self.fixed_bullet_count = self.config.get("fixed_bullet_count", 0)
+        self.no_full_chamber = self.config.get("no_full_chamber", False)
+        self.end_on_full_rotation = self.config.get("end_on_full_rotation", False)
+        self.hide_bullet_count = self.config.get("hide_bullet_count", False)
 
         # 验证配置有效性
         if self.chamber_count < 1:
@@ -105,66 +108,27 @@ class RevolverGunPlugin(Star):
             raise ValueError(
                 f"max_bullet_count({self.max_bullet_count}) 不能超过 chamber_count({self.chamber_count})"
             )
-        self.fixed_bullet_count = self.config.get(
-            "fixed_bullet_count", DEFAULT_FIXED_BULLET_COUNT
-        )
-        self.no_full_chamber = self.config.get(
-            "no_full_chamber", DEFAULT_NO_FULL_CHAMBER
-        )
-        self.end_on_full_rotation = self.config.get(
-            "end_on_full_rotation", DEFAULT_END_ON_FULL_ROTATION
-        )
-        self.hide_bullet_count = self.config.get(
-            "hide_bullet_count", DEFAULT_HIDE_BULLET_COUNT
-        )
 
         # 注册函数工具
         self._register_function_tools()
 
-    def _load_plugin_version(self):
-        """从metadata.yaml读取插件版本"""
+    def _load_plugin_version(self) -> str:
+        """从 metadata.yaml 读取插件版本，失败则回落到默认值"""
         try:
-            import os
-
-            import yaml
-
-            # 获取插件目录路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
             metadata_path = os.path.join(current_dir, "metadata.yaml")
-
             if os.path.exists(metadata_path):
                 with open(metadata_path, encoding="utf-8") as f:
-                    metadata = yaml.safe_load(f)
-                    self.plugin_version = metadata.get("version", PLUGIN_VERSION)
-                    logger.info(f"插件版本从metadata.yaml读取: {self.plugin_version}")
-            else:
-                self.plugin_version = PLUGIN_VERSION
-                logger.warning(
-                    f"未找到metadata.yaml，使用默认版本: {self.plugin_version}"
-                )
-
+                    metadata = yaml.safe_load(f) or {}
+                version = metadata.get("version", _FALLBACK_VERSION)
+                logger.info(f"插件版本从 metadata.yaml 读取: {version}")
+                return version
+            logger.warning(
+                f"未找到 metadata.yaml，使用默认版本: {_FALLBACK_VERSION}"
+            )
         except Exception as e:
-            self.plugin_version = PLUGIN_VERSION
             logger.error(f"读取插件版本失败，使用默认版本: {e}")
-
-    def _init_text_manager(self):
-        """初始化文本管理器"""
-        global text_manager
-        try:
-            from .text_manager import TextManager
-
-            self.text_manager = TextManager(config=self.config)
-            text_manager = self.text_manager
-            logger.info("文本管理器初始化成功")
-        except Exception as e:
-            logger.error(f"文本管理器初始化失败: {e}")
-
-            # 使用默认文本管理器（空实现）
-            class DummyTextManager:
-                def get_text(self, category, **kwargs):
-                    return ""
-
-            text_manager = DummyTextManager()
+        return _FALLBACK_VERSION
 
     def _register_function_tools(self):
         """注册函数工具到AstrBot"""
@@ -224,41 +188,37 @@ class RevolverGunPlugin(Star):
         """
         return event.get_sender_name() or "玩家"
 
-    async def _is_group_admin(self, event: AstrMessageEvent) -> bool:
-        """检查用户是否是群管理员
-
-        Args:
-            event: 消息事件对象
+    async def _get_group_role(
+        self, event: AstrMessageEvent, user_id: int
+    ) -> str:
+        """查询用户在群内的角色
 
         Returns:
-            是否是群管理员
+            ``"owner"`` / ``"admin"`` / ``"member"``；获取失败返回 ""。
         """
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return False
+                return ""
+            if not hasattr(event.bot, "get_group_member_info"):
+                return ""
+            member_info = await event.bot.get_group_member_info(
+                group_id=group_id, user_id=user_id, no_cache=True
+            )
+            if isinstance(member_info, dict):
+                return str(member_info.get("role", "") or "")
+            return str(getattr(member_info, "role", "") or "")
+        except Exception as e:
+            logger.error(f"获取群角色失败: {e}")
+            return ""
 
-            user_id = int(event.get_sender_id())
-
-            # 检查是否是bot超级管理员
+    async def _is_group_admin(self, event: AstrMessageEvent) -> bool:
+        """检查发送者是否是群主/管理员或 Bot 超管"""
+        try:
             if event.is_admin():
                 return True
-
-            # 调用napcat接口获取群成员信息
-            if hasattr(event.bot, "get_group_member_info"):
-                member_info = await event.bot.get_group_member_info(
-                    group_id=group_id, user_id=user_id, no_cache=True
-                )
-
-                # 检查角色：owner(群主) 或 admin(管理员)
-                role = (
-                    member_info.get("role", "")
-                    if isinstance(member_info, dict)
-                    else getattr(member_info, "role", "")
-                )
-                return role in ["owner", "admin"]
-
-            return False
+            user_id = int(event.get_sender_id())
+            return await self._get_group_role(event, user_id) in ("owner", "admin")
         except Exception as e:
             logger.error(f"检查群管理员权限失败: {e}")
             return False
@@ -273,29 +233,40 @@ class RevolverGunPlugin(Star):
             self.group_misfire[group_id] = self.default_misfire
 
     def _load_misfire_config(self):
-        """加载走火配置"""
-        try:
-            import json
+        """加载走火配置
 
+        JSON 不支持 int 作为对象 key，因此读取后需要把 key 显式转回 int，
+        否则 ``self.group_misfire.get(group_id_int, ...)`` 取不到值。
+        """
+        try:
             if self.config_file.exists():
                 with open(self.config_file, encoding="utf-8") as f:
                     data = json.load(f)
-                    self.group_misfire.update(data)
-                logger.info(f"已加载 {len(data)} 个群的走火配置")
+                # 兼容历史 str / int key，统一转 int
+                normalized = {}
+                for k, v in data.items():
+                    try:
+                        normalized[int(k)] = bool(v)
+                    except (TypeError, ValueError):
+                        continue
+                self.group_misfire.update(normalized)
+                logger.info(f"已加载 {len(normalized)} 个群的走火配置")
             else:
                 logger.info("未找到走火配置文件，使用默认配置")
         except Exception as e:
             logger.error(f"加载走火配置失败: {e}")
 
     def _save_misfire_config(self):
-        """保存走火配置"""
-        try:
-            import json
+        """保存走火配置
 
+        JSON 仅支持字符串 key，序列化时显式转 str 以保证语义稳定。
+        """
+        try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
+            serializable = {str(k): bool(v) for k, v in self.group_misfire.items()}
             with open(self.config_file, "w", encoding="utf-8") as f:
-                json.dump(self.group_misfire, f, ensure_ascii=False, indent=2)
-            logger.debug(f"已保存 {len(self.group_misfire)} 个群的走火配置")
+                json.dump(serializable, f, ensure_ascii=False, indent=2)
+            logger.debug(f"已保存 {len(serializable)} 个群的走火配置")
         except Exception as e:
             logger.error(f"保存走火配置失败: {e}")
 
@@ -409,46 +380,15 @@ class RevolverGunPlugin(Star):
         self.group_games.pop(group_id, None)
 
     async def _is_user_bannable(self, event: AstrMessageEvent, user_id: int) -> bool:
-        """检查用户是否可以被禁言（不是群主或管理员）
+        """检查用户是否可以被禁言（群主/管理员免疫）
 
-        Args:
-            event: 消息事件对象
-            user_id: 要检查的用户ID
-
-        Returns:
-            是否可以被禁言
+        无法判断角色时（接口缺失/异常）默认可以禁言，避免游戏卡住。
         """
-        try:
-            group_id = self._get_group_id(event)
-            if not group_id:
-                return False
-
-            # 调用API获取群成员信息
-            if hasattr(event.bot, "get_group_member_info"):
-                member_info = await event.bot.get_group_member_info(
-                    group_id=group_id, user_id=user_id, no_cache=True
-                )
-
-                # 检查角色
-                role = (
-                    member_info.get("role", "member")
-                    if isinstance(member_info, dict)
-                    else getattr(member_info, "role", "member")
-                )
-
-                # 群主和管理员不能被禁言
-                if role in ["owner", "admin"]:
-                    logger.info(f"用户 {user_id} 是{role}，跳过禁言")
-                    return False
-
-                return True
-
-            # 如果无法获取信息，默认可以禁言（兼容旧版本）
-            return True
-        except Exception as e:
-            logger.error(f"检查用户可禁言状态失败: {e}")
-            # 出错时默认可以禁言，避免游戏卡住
-            return True
+        role = await self._get_group_role(event, user_id)
+        if role in ("owner", "admin"):
+            logger.info(f"用户 {user_id} 是{role}，跳过禁言")
+            return False
+        return True
 
     def _format_ban_duration(self, seconds: int) -> str:
         """格式化禁言时长显示
@@ -529,6 +469,183 @@ class RevolverGunPlugin(Star):
     # ========== 独立指令 ==========
 
     @filter.command("装填")
+    # ========== 共享业务逻辑 ==========
+
+    async def _do_load_game(
+        self,
+        event: AstrMessageEvent,
+        group_id: int,
+        user_name: str,
+        requested: int | None,
+        ai_mode: bool = False,
+    ) -> list[str]:
+        """执行装填流程，返回应回复的消息列表。"""
+        self._init_group(group_id)
+        if group_id in self.group_games:
+            return [f"💥 {user_name}，游戏还在进行中！"]
+
+        bullet_count: int | None = None
+        if requested is not None:
+            max_allowed = (
+                self.chamber_count - 1
+                if self.no_full_chamber
+                else self.chamber_count
+            )
+            if 1 <= requested <= max_allowed:
+                bullet_count = requested
+
+        if bullet_count is not None:
+            if not await self._is_group_admin(event):
+                return [
+                    f"😏 {user_name}，你又不是管理才不听你的！\n💡 请使用 /装填 进行随机装填"
+                ]
+        else:
+            bullet_count = self._get_random_bullet_count()
+
+        chambers = self._create_chambers(bullet_count)
+        self.group_games[group_id] = {
+            "chambers": chambers,
+            "current": 0,
+            "start_time": datetime.datetime.now(),
+            "shot_count": 0,
+        }
+        await self._start_timeout(event, group_id)
+        logger.info(
+            f"{'AI: ' if ai_mode else ''}用户 {user_name} 在群 {group_id} 装填 {bullet_count} 发子弹"
+        )
+
+        bullet_display = "?" if self.hide_bullet_count else bullet_count
+        load_msg = self.text_manager.get_text(
+            "load_messages",
+            sender_nickname=user_name,
+            bullet_count=bullet_display,
+        )
+        if ai_mode:
+            body = (
+                f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n"
+                f"💀 {self.chamber_count} 弹膛，谁敢扣动扳机？\n"
+                f"⚡ 限时 {self.timeout} 秒！"
+            )
+        else:
+            body = (
+                f"🔫 {load_msg}\n"
+                f"💀 {self.chamber_count} 弹膛，生死一线！\n"
+                f"⚡ 限时 {self.timeout} 秒！"
+            )
+        return [body]
+
+    async def _do_shoot_game(
+        self,
+        event: AstrMessageEvent,
+        group_id: int,
+        user_name: str,
+        user_id: int,
+        ai_mode: bool = False,
+    ) -> list[str]:
+        """执行开枪流程，返回应回复的消息列表。"""
+        self._init_group(group_id)
+        game = self.group_games.get(group_id)
+        if not game:
+            return [f"⚠️ {user_name}，枪里没子弹！"]
+
+        await self._start_timeout(event, group_id)
+
+        chambers = game["chambers"]
+        current = game["current"]
+        game["shot_count"] = game.get("shot_count", 0) + 1
+        prefix = "AI: " if ai_mode else ""
+        msgs: list[str] = []
+
+        if chambers[current]:
+            chambers[current] = False
+            game["current"] = (current + 1) % self.chamber_count
+
+            if not await self._is_user_bannable(event, user_id):
+                logger.info(
+                    f"⏭️ {prefix}用户 {user_name}({user_id}) 是管理员/群主，免疫中弹"
+                )
+                msgs.append(
+                    f"💥 枪声炸响！\n😱 {user_name} 中弹倒地！\n⚠️ 管理员/群主免疫！"
+                )
+            else:
+                ban_duration = await self._ban_user(event, user_id)
+                if ban_duration > 0:
+                    ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}"
+                else:
+                    ban_msg = "⚠️ 禁言失败！"
+                logger.info(
+                    f"💥 {prefix}用户 {user_name}({user_id}) 在群 {group_id} 中弹"
+                )
+                trigger_msg = self.text_manager.get_text("trigger_descriptions")
+                reaction_msg = self.text_manager.get_text(
+                    "user_reactions", sender_nickname=user_name
+                )
+                msgs.append(f"💥 {trigger_msg}\n😱 {reaction_msg}\n{ban_msg}")
+        else:
+            game["current"] = (current + 1) % self.chamber_count
+            logger.info(
+                f"{prefix}用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生"
+            )
+            msgs.append(
+                self.text_manager.get_text("miss_messages", sender_nickname=user_name)
+            )
+
+        if self._check_game_end(game):
+            self._cleanup_game(group_id)
+            logger.info(f"{prefix}群 {group_id} 游戏结束")
+            end_msg = self.text_manager.get_text("game_end")
+            msgs.append(f"🏁 {end_msg}\n🔄 再来一局？")
+        return msgs
+
+    def _do_status(self, group_id: int) -> str:
+        """生成游戏状态文案。"""
+        game = self.group_games.get(group_id)
+        if not game:
+            return (
+                "🔍 没有游戏进行中\n"
+                "💡 使用 /装填 开始游戏（随机装填）\n"
+                "💡 管理员可使用 /装填 [数量] 指定子弹"
+            )
+        chambers = game["chambers"]
+        current = game["current"]
+        remaining = sum(chambers)
+        status = "🎯 有子弹" if chambers[current] else "🍀 安全"
+        return (
+            f"🔫 游戏进行中\n"
+            f"📊 剩余子弹：{remaining}发\n"
+            f"🎯 当前弹膛：第{current + 1}膛\n"
+            f"{status}"
+        )
+
+    async def _do_misfire(
+        self,
+        event: AstrMessageEvent,
+        group_id: int,
+        user_name: str,
+        user_id: int,
+    ) -> str:
+        """执行随机走火，返回回复文案。"""
+        if not await self._is_user_bannable(event, user_id):
+            logger.info(
+                f"⏭️ 群 {group_id} 用户 {user_name}({user_id}) 是管理员/群主，免疫随机走火"
+            )
+            return (
+                f"💥 手枪走火！\n😱 {user_name} 不幸中弹！\n⚠️ 管理员/群主免疫！"
+            )
+        ban_duration = await self._ban_user(event, user_id)
+        if ban_duration > 0:
+            ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}！"
+        else:
+            ban_msg = "⚠️ 禁言失败！"
+        logger.info(
+            f"💥 群 {group_id} 用户 {user_name}({user_id}) 触发随机走火"
+        )
+        misfire_desc = self.text_manager.get_text("misfire_descriptions")
+        reaction_msg = self.text_manager.get_text(
+            "user_reactions", sender_nickname=user_name
+        )
+        return f"💥 {misfire_desc}\n😱 {reaction_msg}\n{ban_msg}"
+
     async def load_bullets(self, event: AstrMessageEvent):
         """装填子弹
 
@@ -581,11 +698,11 @@ class RevolverGunPlugin(Star):
             # 构建装填消息
             if self.hide_bullet_count:
                 # 隐藏子弹数量
-                load_msg = text_manager.get_text(
+                load_msg = self.text_manager.get_text(
                     "load_messages", sender_nickname=user_name, bullet_count="?"
                 )
             else:
-                load_msg = text_manager.get_text(
+                load_msg = self.text_manager.get_text(
                     "load_messages",
                     sender_nickname=user_name,
                     bullet_count=bullet_count,
@@ -658,8 +775,8 @@ class RevolverGunPlugin(Star):
                     logger.info(f"💥 用户 {user_name}({user_id}) 在群 {group_id} 中弹")
 
                     # 使用YAML文本
-                    trigger_msg = text_manager.get_text("trigger_descriptions")
-                    reaction_msg = text_manager.get_text(
+                    trigger_msg = self.text_manager.get_text("trigger_descriptions")
+                    reaction_msg = self.text_manager.get_text(
                         "user_reactions", sender_nickname=user_name
                     )
                     yield event.plain_result(
@@ -672,7 +789,7 @@ class RevolverGunPlugin(Star):
                 logger.info(f"用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生")
 
                 # 使用YAML文本
-                miss_msg = text_manager.get_text(
+                miss_msg = self.text_manager.get_text(
                     "miss_messages", sender_nickname=user_name
                 )
                 yield event.plain_result(miss_msg)
@@ -681,7 +798,7 @@ class RevolverGunPlugin(Star):
             if self._check_game_end(game):
                 self._cleanup_game(group_id)
                 logger.info(f"群 {group_id} 游戏结束")
-                end_msg = text_manager.get_text("game_end")
+                end_msg = self.text_manager.get_text("game_end")
                 yield event.plain_result(f"🏁 {end_msg}\n🔄 再来一局？")
 
         except Exception as e:
@@ -737,7 +854,7 @@ class RevolverGunPlugin(Star):
         显示插件的使用说明和游戏规则
         """
         try:
-            help_text = """🔫 左轮手枪对决 v1.0
+            help_text = f"""🔫 左轮手枪对决 v{self.plugin_version}
 
 【用户指令】
 /装填 - 随机装填子弹（1-6发）
@@ -834,42 +951,13 @@ class RevolverGunPlugin(Star):
         监听非指令消息，根据设定的概率触发随机走火事件
         """
         try:
-            # 检查走火（不检查前缀，依赖框架指令系统处理指令）
             group_id = self._get_group_id(event)
             if group_id and self._check_misfire(group_id):
                 user_name = self._get_user_name(event)
                 user_id = int(event.get_sender_id())
-
-                # 检查是否可禁言（管理员/群主免疫）
-                if not await self._is_user_bannable(event, user_id):
-                    # 管理员/群主免疫，直接显示免疫提示
-                    logger.info(
-                        f"⏭️ 群 {group_id} 用户 {user_name}({user_id}) 是管理员/群主，免疫随机走火"
-                    )
-                    yield event.plain_result(
-                        f"💥 手枪走火！\n😱 {user_name} 不幸中弹！\n⚠️ 管理员/群主免疫！"
-                    )
-                else:
-                    # 普通用户，执行禁言
-                    ban_duration = await self._ban_user(event, user_id)
-                    if ban_duration > 0:
-                        formatted_duration = self._format_ban_duration(ban_duration)
-                        ban_msg = f"🔇 禁言 {formatted_duration}！"
-                    else:
-                        ban_msg = "⚠️ 禁言失败！"
-
-                    logger.info(
-                        f"💥 群 {group_id} 用户 {user_name}({user_id}) 触发随机走火"
-                    )
-
-                    # 使用YAML文本
-                    misfire_desc = text_manager.get_text("misfire_descriptions")
-                    reaction_msg = text_manager.get_text(
-                        "user_reactions", sender_nickname=user_name
-                    )
-                    yield event.plain_result(
-                        f"💥 {misfire_desc}\n😱 {reaction_msg}\n{ban_msg}"
-                    )
+                yield event.plain_result(
+                    await self._do_misfire(event, group_id, user_name, user_id)
+                )
         except Exception as e:
             logger.error(f"随机走火监听失败: {e}")
 
@@ -905,7 +993,7 @@ class RevolverGunPlugin(Star):
 
                     # 发送超时通知（使用bot对象）
                     try:
-                        timeout_msg = text_manager.get_text("timeout")
+                        timeout_msg = self.text_manager.get_text("timeout")
                         if hasattr(bot, "send_group_msg"):
                             await bot.send_group_msg(
                                 group_id=group_id,
@@ -1026,70 +1114,17 @@ class RevolverGunPlugin(Star):
     # ========== AI工具调用方法 ==========
 
     async def ai_start_game(self, event: AstrMessageEvent, bullets: int | None = None):
-        """AI启动游戏 - 供AI工具调用
-
-        Args:
-            event: 消息事件对象
-            bullets: 子弹数量(可选)
-        """
+        """AI启动游戏 - 供 AI 工具调用"""
         group_id = self._get_group_id(event)
         if not group_id:
             logger.warning("AI工具无法获取group_id")
             return
-
         try:
-            self._init_group(group_id)
             user_name = self._get_user_name(event)
-
-            # 检查是否已有游戏
-            if group_id in self.group_games:
-                await event.bot.send_group_msg(
-                    group_id=group_id, message=f"💥 {user_name}，游戏还在进行中！"
-                )
-                return
-
-            # 解析子弹数量
-            max_allowed = (
-                self.chamber_count - 1 if self.no_full_chamber else self.chamber_count
-            )
-            if bullets is not None and 1 <= bullets <= max_allowed:
-                # 用户指定了子弹数量，检查是否是管理员
-                if not await self._is_group_admin(event):
-                    await event.bot.send_group_msg(
-                        group_id=group_id,
-                        message=f"😏 {user_name}，你又不是管理才不听你的！\n💡 请使用 /装填 进行随机装填",
-                    )
-                    return
-            else:
-                # 未指定或无效数量，随机装填
-                bullets = self._get_random_bullet_count()
-
-            # 创建游戏
-            chambers = self._create_chambers(bullets)
-            self.group_games[group_id] = {
-                "chambers": chambers,
-                "current": 0,
-                "start_time": datetime.datetime.now(),
-                "shot_count": 0,  # 记录已射击次数
-            }
-
-            # 设置超时
-            await self._start_timeout(event, group_id)
-
-            logger.info(f"AI: 用户 {user_name} 在群 {group_id} 装填 {bullets} 发子弹")
-
-            # 构建装填消息
-            if self.hide_bullet_count:
-                load_msg = text_manager.get_text(
-                    "load_messages", sender_nickname=user_name, bullet_count="?"
-                )
-            else:
-                load_msg = text_manager.get_text(
-                    "load_messages", sender_nickname=user_name, bullet_count=bullets
-                )
-            response_text = f"🎯 {user_name} 挑战命运！\n🔫 {load_msg}\n💀 {self.chamber_count} 弹膛，谁敢扣动扳机？\n⚡ 限时 {self.timeout} 秒！"
-            await event.bot.send_group_msg(group_id=group_id, message=response_text)
-
+            for msg in await self._do_load_game(
+                event, group_id, user_name, bullets, ai_mode=True
+            ):
+                await event.bot.send_group_msg(group_id=group_id, message=msg)
         except Exception as e:
             logger.error(f"AI启动游戏失败: {e}")
             await event.bot.send_group_msg(
@@ -1097,94 +1132,18 @@ class RevolverGunPlugin(Star):
             )
 
     async def ai_join_game(self, event: AstrMessageEvent):
-        """AI参与游戏 - 供AI工具调用
-
-        Args:
-            event: 消息事件对象
-        """
+        """AI参与游戏 - 供 AI 工具调用"""
         group_id = self._get_group_id(event)
         if not group_id:
             logger.warning("AI工具无法获取group_id")
             return
-
         try:
-            self._init_group(group_id)
             user_name = self._get_user_name(event)
             user_id = int(event.get_sender_id())
-
-            # 检查游戏状态
-            game = self.group_games.get(group_id)
-            if not game:
-                await event.bot.send_group_msg(
-                    group_id=group_id, message=f"⚠️ {user_name}，枪里没子弹！"
-                )
-                return
-
-            # 重置超时
-            await self._start_timeout(event, group_id)
-
-            # 执行射击
-            chambers = game["chambers"]
-            current = game["current"]
-            hit = chambers[current]
-            result_msg = ""
-
-            # 增加射击计数
-            game["shot_count"] = game.get("shot_count", 0) + 1
-
-            if hit:
-                # 中弹
-                chambers[current] = False
-                game["current"] = (current + 1) % self.chamber_count
-
-                # 检查是否可禁言（管理员/群主免疫）
-                if not await self._is_user_bannable(event, user_id):
-                    logger.info(
-                        f"⏭️ AI: 用户 {user_name}({user_id}) 是管理员/群主，免疫中弹"
-                    )
-                    result_msg = (
-                        f"💥 枪声炸响！\n😱 {user_name} 中弹倒地！\n⚠️ 管理员/群主免疫！"
-                    )
-                else:
-                    # 普通用户，执行禁言
-                    ban_duration = await self._ban_user(event, user_id)
-                    if ban_duration > 0:
-                        formatted_duration = self._format_ban_duration(ban_duration)
-                        ban_msg = f"🔇 禁言 {formatted_duration}"
-                    else:
-                        ban_msg = "⚠️ 禁言失败！"
-
-                    logger.info(
-                        f"💥 AI: 用户 {user_name}({user_id}) 在群 {group_id} 中弹"
-                    )
-
-                    # 使用YAML文本
-                    trigger_msg = text_manager.get_text("trigger_descriptions")
-                    reaction_msg = text_manager.get_text(
-                        "user_reactions", sender_nickname=user_name
-                    )
-                    result_msg = f"💥 {trigger_msg}\n😱 {reaction_msg}\n{ban_msg}"
-            else:
-                # 空弹
-                game["current"] = (current + 1) % self.chamber_count
-                logger.info(f"AI: 用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生")
-                # 使用YAML文本
-                result_msg = text_manager.get_text(
-                    "miss_messages", sender_nickname=user_name
-                )
-
-            # 发送初步结果
-            await event.bot.send_group_msg(group_id=group_id, message=result_msg)
-
-            # 检查游戏结束条件
-            if self._check_game_end(game):
-                self._cleanup_game(group_id)
-                logger.info(f"AI: 群 {group_id} 游戏结束")
-                end_msg = text_manager.get_text("game_end")
-                await event.bot.send_group_msg(
-                    group_id=group_id, message=f"🏁 {end_msg}\n🔄 再来一局？"
-                )
-
+            for msg in await self._do_shoot_game(
+                event, group_id, user_name, user_id, ai_mode=True
+            ):
+                await event.bot.send_group_msg(group_id=group_id, message=msg)
         except Exception as e:
             logger.error(f"AI参与游戏失败: {e}")
             await event.bot.send_group_msg(
@@ -1192,32 +1151,15 @@ class RevolverGunPlugin(Star):
             )
 
     async def ai_check_status(self, event: AstrMessageEvent):
-        """AI查询游戏状态 - 供AI工具调用
-
-        Args:
-            event: 消息事件对象
-        """
+        """AI查询游戏状态 - 供 AI 工具调用"""
         group_id = self._get_group_id(event)
         if not group_id:
             logger.warning("AI工具无法获取group_id")
             return
-
         try:
-            game = self.group_games.get(group_id)
-            if not game:
-                response_text = "🔍 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
-            else:
-                chambers = game["chambers"]
-                current = game["current"]
-                remaining = sum(chambers)
-                status = "🎯 有子弹" if chambers[current] else "🍀 安全"
-                response_text = (
-                    f"🔫 游戏进行中\n"
-                    f"📊 剩余子弹：{remaining}发\n"
-                    f"🎯 当前弹膛：第{current + 1}膛\n"
-                    f"{status}"
-                )
-            await event.bot.send_group_msg(group_id=group_id, message=response_text)
+            await event.bot.send_group_msg(
+                group_id=group_id, message=self._do_status(group_id)
+            )
         except Exception as e:
             logger.error(f"AI查询状态失败: {e}")
             await event.bot.send_group_msg(
