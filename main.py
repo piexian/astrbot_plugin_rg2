@@ -66,20 +66,13 @@ class RevolverGunPlugin(Star):
         # 加载持久化配置
         self._load_misfire_config()
 
-        # 初始化文本管理器（构造失败时回落到空 TextManager，保证 get_text 始终可用）
-        try:
-            self.text_manager = TextManager(
-                custom_texts=self.config.get("custom_texts", []) or []
-            )
-            logger.info(
-                f"文本管理器初始化成功，已加载分类: {self.text_manager.categories}"
-            )
-        except Exception as e:
-            logger.error(f"文本管理器初始化失败，使用内置默认文本: {e}")
-            self.text_manager = TextManager.__new__(TextManager)
-            self.text_manager.texts = {}
-            self.text_manager.custom_texts = []
-            self.text_manager.yaml_path = None  # type: ignore[assignment]
+        # 初始化文本管理器（构造永远成功，加载错误内部消化）
+        self.text_manager = TextManager(
+            custom_texts=self.config.get("custom_texts", []) or []
+        )
+        logger.info(
+            f"文本管理器初始化成功，已加载分类: {self.text_manager.categories}"
+        )
 
         # 配置参数
         self.timeout = self.config.get("timeout_seconds", 120)
@@ -466,9 +459,6 @@ class RevolverGunPlugin(Star):
 
         return 0
 
-    # ========== 独立指令 ==========
-
-    @filter.command("装填")
     # ========== 共享业务逻辑 ==========
 
     async def _do_load_game(
@@ -646,6 +636,9 @@ class RevolverGunPlugin(Star):
         )
         return f"💥 {misfire_desc}\n😱 {reaction_msg}\n{ban_msg}"
 
+    # ========== 独立指令 ==========
+
+    @filter.command("装填")
     async def load_bullets(self, event: AstrMessageEvent):
         """装填子弹
 
@@ -658,60 +651,12 @@ class RevolverGunPlugin(Star):
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
                 return
-
-            self._init_group(group_id)
             user_name = self._get_user_name(event)
-
-            # 检查是否已有游戏
-            if group_id in self.group_games:
-                yield event.plain_result(f"💥 {user_name}，游戏还在进行中！")
-                return
-
-            # 解析子弹数量
-            bullet_count = self._parse_bullet_count(event.message_str or "")
-
-            # 如果指定了子弹数量，检查是否是管理员
-            if bullet_count is not None:
-                if not await self._is_group_admin(event):
-                    yield event.plain_result(
-                        f"😏 {user_name}，你又不是管理才不听你的！\n💡 请使用 /装填 进行随机装填"
-                    )
-                    return
-            else:
-                # 未指定数量，随机装填
-                bullet_count = self._get_random_bullet_count()
-
-            # 创建游戏
-            chambers = self._create_chambers(bullet_count)
-            self.group_games[group_id] = {
-                "chambers": chambers,
-                "current": 0,
-                "start_time": datetime.datetime.now(),
-                "shot_count": 0,  # 记录已射击次数，用于弹膛轮转结束判断
-            }
-
-            # 设置超时
-            await self._start_timeout(event, group_id)
-
-            logger.info(f"用户 {user_name} 在群 {group_id} 装填 {bullet_count} 发子弹")
-
-            # 构建装填消息
-            if self.hide_bullet_count:
-                # 隐藏子弹数量
-                load_msg = self.text_manager.get_text(
-                    "load_messages", sender_nickname=user_name, bullet_count="?"
-                )
-            else:
-                load_msg = self.text_manager.get_text(
-                    "load_messages",
-                    sender_nickname=user_name,
-                    bullet_count=bullet_count,
-                )
-            yield event.plain_result(
-                f"🔫 {load_msg}\n"
-                f"💀 {self.chamber_count} 弹膛，生死一线！\n"
-                f"⚡ 限时 {self.timeout} 秒！"
-            )
+            requested = self._parse_bullet_count(event.message_str or "")
+            for msg in await self._do_load_game(
+                event, group_id, user_name, requested, ai_mode=False
+            ):
+                yield event.plain_result(msg)
         except Exception as e:
             logger.error(f"装填子弹失败: {e}")
             yield event.plain_result("❌ 装填失败，请重试")
@@ -728,79 +673,12 @@ class RevolverGunPlugin(Star):
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
                 return
-
-            self._init_group(group_id)
             user_name = self._get_user_name(event)
             user_id = int(event.get_sender_id())
-
-            # 检查游戏状态
-            game = self.group_games.get(group_id)
-            if not game:
-                yield event.plain_result(f"⚠️ {user_name}，枪里没子弹！")
-                return
-
-            # 重置超时
-            await self._start_timeout(event, group_id)
-
-            # 执行射击
-            chambers = game["chambers"]
-            current = game["current"]
-
-            # 增加射击计数
-            game["shot_count"] = game.get("shot_count", 0) + 1
-
-            if chambers[current]:
-                # 中弹
-                chambers[current] = False
-                game["current"] = (current + 1) % self.chamber_count
-
-                # 检查是否可禁言（管理员/群主免疫）
-                if not await self._is_user_bannable(event, user_id):
-                    # 管理员/群主免疫，直接显示免疫提示
-                    logger.info(
-                        f"⏭️ 用户 {user_name}({user_id}) 是管理员/群主，免疫中弹"
-                    )
-                    yield event.plain_result(
-                        f"💥 枪声炸响！\n😱 {user_name} 中弹倒地！\n⚠️ 管理员/群主免疫！"
-                    )
-                else:
-                    # 普通用户，执行禁言
-                    ban_duration = await self._ban_user(event, user_id)
-                    if ban_duration > 0:
-                        formatted_duration = self._format_ban_duration(ban_duration)
-                        ban_msg = f"🔇 禁言 {formatted_duration}"
-                    else:
-                        ban_msg = "⚠️ 禁言失败！"
-
-                    logger.info(f"💥 用户 {user_name}({user_id}) 在群 {group_id} 中弹")
-
-                    # 使用YAML文本
-                    trigger_msg = self.text_manager.get_text("trigger_descriptions")
-                    reaction_msg = self.text_manager.get_text(
-                        "user_reactions", sender_nickname=user_name
-                    )
-                    yield event.plain_result(
-                        f"💥 {trigger_msg}\n😱 {reaction_msg}\n{ban_msg}"
-                    )
-            else:
-                # 空弹
-                game["current"] = (current + 1) % self.chamber_count
-
-                logger.info(f"用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生")
-
-                # 使用YAML文本
-                miss_msg = self.text_manager.get_text(
-                    "miss_messages", sender_nickname=user_name
-                )
-                yield event.plain_result(miss_msg)
-
-            # 检查游戏结束条件
-            if self._check_game_end(game):
-                self._cleanup_game(group_id)
-                logger.info(f"群 {group_id} 游戏结束")
-                end_msg = self.text_manager.get_text("game_end")
-                yield event.plain_result(f"🏁 {end_msg}\n🔄 再来一局？")
-
+            for msg in await self._do_shoot_game(
+                event, group_id, user_name, user_id, ai_mode=False
+            ):
+                yield event.plain_result(msg)
         except Exception as e:
             logger.error(f"开枪失败: {e}")
             yield event.plain_result("❌ 操作失败，请重试")
@@ -822,26 +700,7 @@ class RevolverGunPlugin(Star):
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
                 return
-
-            game = self.group_games.get(group_id)
-            if not game:
-                yield event.plain_result(
-                    "🔍 没有游戏进行中\n💡 使用 /装填 开始游戏（随机装填）\n💡 管理员可使用 /装填 [数量] 指定子弹"
-                )
-                return
-
-            chambers = game["chambers"]
-            current = game["current"]
-            remaining = sum(chambers)
-
-            status = "🎯 有子弹" if chambers[current] else "🍀 安全"
-
-            yield event.plain_result(
-                f"🔫 游戏进行中\n"
-                f"📊 剩余子弹：{remaining}发\n"
-                f"🎯 当前弹膛：第{current + 1}膛\n"
-                f"{status}"
-            )
+            yield event.plain_result(self._do_status(group_id))
         except Exception as e:
             logger.error(f"查询游戏状态失败: {e}")
             yield event.plain_result("❌ 查询失败，请重试")

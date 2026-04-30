@@ -50,19 +50,27 @@ class TextManager:
         self._load()
 
     def _load(self) -> None:
-        """从 YAML 与 custom_texts 加载并合并所有文本分类"""
+        """从 YAML 与 custom_texts 加载并合并所有文本分类。
+
+        加载失败不会抛异常（只会记日志并回落到空集合），
+        以保证 ``get_text`` 始终可用。
+        """
         # 1) YAML 默认文本
+        self.texts = {}
         try:
-            if self.yaml_path.exists():
+            if self.yaml_path and self.yaml_path.exists():
                 with open(self.yaml_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
-                self.texts = {
-                    k: list(v) for k, v in data.items() if isinstance(v, list)
-                }
-            else:
-                self.texts = {}
+                for k, v in data.items():
+                    if not isinstance(v, list):
+                        continue
+                    # 只保留非空字符串，避免下游 .format() 崩溃
+                    items = [s for s in v if isinstance(s, str) and s]
+                    if items:
+                        self.texts[k] = items
         except Exception as e:
-            raise RuntimeError(f"加载文本文件失败: {e}")
+            # 记录但不抛出，避免插件启动失败
+            print(f"[TextManager] 加载 {self.yaml_path} 失败: {e}")
 
         # 2) 合并用户自定义 custom_texts（template_list 形式）
         for entry in self.custom_texts:
