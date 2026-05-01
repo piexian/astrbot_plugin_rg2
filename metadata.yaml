@@ -1,6 +1,6 @@
 name: astrbot_plugin_rg2
 display_name: 🔫 左轮手枪对决
-version: 1.2.6
+version: 1.2.7
 author: piexian
 description: 一个刺激的群聊轮盘赌游戏插件。支持管理员装填子弹、用户开枪对决、随机走火等功能，提供完整的游戏体验和AI自然语言交互支持。
 repo: https://github.com/piexian/astrbot_plugin_rg2
