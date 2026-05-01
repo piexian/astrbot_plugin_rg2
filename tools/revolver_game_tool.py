@@ -8,20 +8,27 @@ class BaseRevolverTool:
     """左轮手枪工具基类，包含通用辅助方法"""
 
     def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
-        """获取群ID"""
-        return getattr(event.message_obj, "group_id", None)
+        """获取群ID，优先使用 message_obj，回退到 unified_msg_origin（兼容 LLM 工具调用）。"""
+        group_id = getattr(event.message_obj, "group_id", None)
+        if group_id:
+            return group_id
+        try:
+            origin = getattr(event, "unified_msg_origin", "")
+            if origin and ":group:" in origin:
+                parts = origin.split(":")
+                if len(parts) >= 3:
+                    return int(parts[2])
+        except (ValueError, AttributeError):
+            pass
+        return None
 
     def _get_user_name(self, event: AstrMessageEvent) -> str:
         """获取用户昵称"""
         return event.get_sender_name() or "玩家"
 
-    def _get_unique_id(self, event: AstrMessageEvent) -> str:
-        """获取唯一标识符"""
-        return f"{event.get_sender_id()}_{event.message_obj.message_id}"
-
 
 class RevolverGameTool(FunctionTool, BaseRevolverTool):
-    """AI统一触发器工具 - 左轮手枪游戏控制器w
+    """AI统一触发器工具 - 左轮手枪游戏控制器
 
     通过action参数控制不同操作：
     - start: 启动新游戏
@@ -31,9 +38,9 @@ class RevolverGameTool(FunctionTool, BaseRevolverTool):
 
     def __init__(self, plugin_instance=None):
         """初始化统一触发器工具
-        ha
-                Args:
-                    plugin_instance: 插件实例，用于触发游戏逻辑
+
+        Args:
+            plugin_instance: 插件实例，用于触发游戏逻辑
         """
         self.name = "revolver_game"
         self.description = """左轮手枪轮盘赌游戏控制器 - 启动游戏、参与射击、查询状态

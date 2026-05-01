@@ -65,59 +65,132 @@
     "default": 2,
     "hint": "AI触发工具后的等待时间。修改后需重载插件生效"
   },
-  "misfire_descriptions": {
-    "description": "自定义走火描述文本（每行一条）",
-    "type": "list",
-    "hint": "当随机走火触发时显示的描述，为空则使用默认配置"
-  },
-  "user_reactions": {
-    "description": "自定义用户反应文本（每行一条，支持 {sender_nickname} 变量）",
-    "type": "list",
-    "hint": "当走火发生时用户的反应描述，为空则使用默认配置"
-  },
-  "trigger_descriptions": {
-    "description": "自定义扳机描述文本（每行一条）",
-    "type": "list",
-    "hint": "当子弹击中时显示的描述，为空则使用默认配置"
-  },
-  "miss_messages": {
-    "description": "自定义空弹逃生文本（每行一条，支持 {sender_nickname} 变量）",
-    "type": "list",
-    "hint": "当开枪未中弹时显示的描述，为空则使用默认配置"
-  },
-  "game_status": {
-    "description": "自定义游戏状态文本（每行一条）",
-    "type": "list",
-    "hint": "查询游戏状态时显示的标题，为空则使用默认配置"
-  },
-  "load_messages": {
-    "description": "自定义装填消息文本（每行一条）",
-    "type": "list",
-    "hint": "装填子弹时显示的描述，为空则使用默认配置"
-  },
-  "game_end": {
-    "description": "自定义游戏结束文本（每行一条）",
-    "type": "list",
-    "hint": "游戏结束时显示的描述，为空则使用默认配置"
-  },
-  "timeout": {
-    "description": "自定义超时消息文本（每行一条）",
-    "type": "list",
-    "hint": "游戏超时时显示的描述，为空则使用默认配置"
-  },
-  "warnings": {
-    "description": "自定义警告消息文本（每行一条）",
-    "type": "list",
-    "hint": "警告信息，为空则使用默认配置"
-  },
-  "victory": {
-    "description": "自定义胜利消息文本（每行一条）",
-    "type": "list",
-    "hint": "胜利时显示的描述，为空则使用默认配置"
-  },
-  "defeat": {
-    "description": "自定义失败消息文本（每行一条）",
-    "type": "list",
-    "hint": "失败时显示的描述，为空则使用默认配置"
+  "custom_texts": {
+    "type": "template_list",
+    "description": "自定义文本（按分类添加任意条数，留空则使用 revolver_game_texts.yml 默认文本）",
+    "hint": "点击新增条目，先选择分类模板，再填写文本。文本可使用 {sender_nickname}、{bullet_count} 等变量。也可在 revolver_game_texts.yml 中扩展自定义分类。",
+    "templates": {
+      "misfire_descriptions": {
+        "name": "走火描述",
+        "hint": "随机走火触发时显示",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "user_reactions": {
+        "name": "用户反应",
+        "hint": "走火发生时用户的反应描述，支持 {sender_nickname}",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "trigger_descriptions": {
+        "name": "扳机描述",
+        "hint": "子弹击中时显示的描述",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "miss_messages": {
+        "name": "空弹逃生",
+        "hint": "开枪未中弹时显示，支持 {sender_nickname}",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "game_status": {
+        "name": "游戏状态",
+        "hint": "查询游戏状态时显示的标题",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "load_messages": {
+        "name": "装填消息",
+        "hint": "装填子弹时显示的描述，支持 {bullet_count}",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "game_end": {
+        "name": "游戏结束",
+        "hint": "游戏结束时显示的描述",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "timeout": {
+        "name": "超时消息",
+        "hint": "游戏超时时显示的描述",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "warnings": {
+        "name": "警告消息",
+        "hint": "警告信息",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "victory": {
+        "name": "胜利消息",
+        "hint": "胜利时显示的描述",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      },
+      "defeat": {
+        "name": "失败消息",
+        "hint": "失败时显示的描述",
+        "items": {
+          "text": {
+            "description": "文本内容",
+            "type": "text",
+            "default": ""
+          }
+        }
+      }
+    }
   }
 }
