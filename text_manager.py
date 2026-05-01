@@ -32,7 +32,9 @@ _DEFAULT_TEXTS: Dict[str, str] = {
 class TextManager:
     """管理游戏文本的加载和获取"""
 
-    def __init__(self, yaml_path: Optional[str] = None, custom_texts: Optional[List[Dict]] = None):
+    def __init__(
+        self, yaml_path: Optional[str] = None, custom_texts: Optional[List[Dict]] = None
+    ):
         """初始化文本管理器
 
         Args:
@@ -93,7 +95,11 @@ class TextManager:
             格式化后的文本；分类缺失时回落到内置默认值
         """
         candidates = self.texts.get(category)
-        text = random.choice(candidates) if candidates else _DEFAULT_TEXTS.get(category, "")
+        text = (
+            random.choice(candidates)
+            if candidates
+            else _DEFAULT_TEXTS.get(category, "")
+        )
 
         try:
             return text.format(**kwargs)

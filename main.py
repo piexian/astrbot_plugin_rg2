@@ -70,9 +70,7 @@ class RevolverGunPlugin(Star):
         self.text_manager = TextManager(
             custom_texts=self.config.get("custom_texts", []) or []
         )
-        logger.info(
-            f"文本管理器初始化成功，已加载分类: {self.text_manager.categories}"
-        )
+        logger.info(f"文本管理器初始化成功，已加载分类: {self.text_manager.categories}")
 
         # 配置参数
         self.timeout = self.config.get("timeout_seconds", 120)
@@ -116,9 +114,7 @@ class RevolverGunPlugin(Star):
                 version = metadata.get("version", _FALLBACK_VERSION)
                 logger.info(f"插件版本从 metadata.yaml 读取: {version}")
                 return version
-            logger.warning(
-                f"未找到 metadata.yaml，使用默认版本: {_FALLBACK_VERSION}"
-            )
+            logger.warning(f"未找到 metadata.yaml，使用默认版本: {_FALLBACK_VERSION}")
         except Exception as e:
             logger.error(f"读取插件版本失败，使用默认版本: {e}")
         return _FALLBACK_VERSION
@@ -181,9 +177,7 @@ class RevolverGunPlugin(Star):
         """
         return event.get_sender_name() or "玩家"
 
-    async def _get_group_role(
-        self, event: AstrMessageEvent, user_id: int
-    ) -> str:
+    async def _get_group_role(self, event: AstrMessageEvent, user_id: int) -> str:
         """查询用户在群内的角色
 
         Returns:
@@ -409,7 +403,13 @@ class RevolverGunPlugin(Star):
             else:
                 return f"{hours}小时"
 
-    async def _ban_user(self, event: AstrMessageEvent, user_id: int) -> int:
+    async def _ban_user(
+        self,
+        event: AstrMessageEvent,
+        user_id: int,
+        *,
+        is_bannable: bool | None = None,
+    ) -> int:
         """禁言用户
 
         Args:
@@ -424,8 +424,9 @@ class RevolverGunPlugin(Star):
             logger.warning("❌ 无法获取群ID，跳过禁言")
             return 0
 
-        # 检查是否可以禁言该用户
-        if not await self._is_user_bannable(event, user_id):
+        if is_bannable is None:
+            is_bannable = await self._is_user_bannable(event, user_id)
+        if not is_bannable:
             user_name = self._get_user_name(event)
             logger.info(f"⏭️ 用户 {user_name}({user_id}) 是管理员/群主，跳过禁言")
             return 0
@@ -477,9 +478,7 @@ class RevolverGunPlugin(Star):
         bullet_count: int | None = None
         if requested is not None:
             max_allowed = (
-                self.chamber_count - 1
-                if self.no_full_chamber
-                else self.chamber_count
+                self.chamber_count - 1 if self.no_full_chamber else self.chamber_count
             )
             if 1 <= requested <= max_allowed:
                 bullet_count = requested
@@ -550,7 +549,8 @@ class RevolverGunPlugin(Star):
             chambers[current] = False
             game["current"] = (current + 1) % self.chamber_count
 
-            if not await self._is_user_bannable(event, user_id):
+            is_bannable = await self._is_user_bannable(event, user_id)
+            if not is_bannable:
                 logger.info(
                     f"⏭️ {prefix}用户 {user_name}({user_id}) 是管理员/群主，免疫中弹"
                 )
@@ -558,7 +558,9 @@ class RevolverGunPlugin(Star):
                     f"💥 枪声炸响！\n😱 {user_name} 中弹倒地！\n⚠️ 管理员/群主免疫！"
                 )
             else:
-                ban_duration = await self._ban_user(event, user_id)
+                ban_duration = await self._ban_user(
+                    event, user_id, is_bannable=is_bannable
+                )
                 if ban_duration > 0:
                     ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}"
                 else:
@@ -573,9 +575,7 @@ class RevolverGunPlugin(Star):
                 msgs.append(f"💥 {trigger_msg}\n😱 {reaction_msg}\n{ban_msg}")
         else:
             game["current"] = (current + 1) % self.chamber_count
-            logger.info(
-                f"{prefix}用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生"
-            )
+            logger.info(f"{prefix}用户 {user_name}({user_id}) 在群 {group_id} 空弹逃生")
             msgs.append(
                 self.text_manager.get_text("miss_messages", sender_nickname=user_name)
             )
@@ -600,8 +600,9 @@ class RevolverGunPlugin(Star):
         current = game["current"]
         remaining = sum(chambers)
         status = "🎯 有子弹" if chambers[current] else "🍀 安全"
+        title = self.text_manager.get_text("game_status")
         return (
-            f"🔫 游戏进行中\n"
+            f"🔫 {title}\n"
             f"📊 剩余子弹：{remaining}发\n"
             f"🎯 当前弹膛：第{current + 1}膛\n"
             f"{status}"
@@ -615,21 +616,18 @@ class RevolverGunPlugin(Star):
         user_id: int,
     ) -> str:
         """执行随机走火，返回回复文案。"""
-        if not await self._is_user_bannable(event, user_id):
+        is_bannable = await self._is_user_bannable(event, user_id)
+        if not is_bannable:
             logger.info(
                 f"⏭️ 群 {group_id} 用户 {user_name}({user_id}) 是管理员/群主，免疫随机走火"
             )
-            return (
-                f"💥 手枪走火！\n😱 {user_name} 不幸中弹！\n⚠️ 管理员/群主免疫！"
-            )
-        ban_duration = await self._ban_user(event, user_id)
+            return f"💥 手枪走火！\n😱 {user_name} 不幸中弹！\n⚠️ 管理员/群主免疫！"
+        ban_duration = await self._ban_user(event, user_id, is_bannable=is_bannable)
         if ban_duration > 0:
             ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}！"
         else:
             ban_msg = "⚠️ 禁言失败！"
-        logger.info(
-            f"💥 群 {group_id} 用户 {user_name}({user_id}) 触发随机走火"
-        )
+        logger.info(f"💥 群 {group_id} 用户 {user_name}({user_id}) 触发随机走火")
         misfire_desc = self.text_manager.get_text("misfire_descriptions")
         reaction_msg = self.text_manager.get_text(
             "user_reactions", sender_nickname=user_name
