@@ -10,6 +10,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
+from .core.qq_official import ban_member, is_qq_official_event, send_text
 from .text_manager import TextManager
 
 # 插件元数据（仅 register 装饰器使用，真实版本号从 metadata.yaml 读取）
@@ -50,10 +51,10 @@ class RevolverGunPlugin(Star):
         # 读取插件版本（来自 metadata.yaml，失败回落到 _FALLBACK_VERSION）
         self.plugin_version = self._load_plugin_version()
 
-        # 游戏状态管理
-        self.group_games: dict[int, dict] = {}
-        self.group_misfire: dict[int, bool] = {}
-        self.timeout_tasks: dict[int, asyncio.Task] = {}
+        # 游戏状态管理（key 统一为群ID字符串）
+        self.group_games: dict[str, dict] = {}
+        self.group_misfire: dict[str, bool] = {}
+        self.timeout_tasks: dict[str, asyncio.Task] = {}
 
         # AI触发器事件队列
         self.ai_trigger_queue: dict[str, dict] = {}
@@ -139,28 +140,28 @@ class RevolverGunPlugin(Star):
         except Exception as e:
             logger.error(f"注册函数工具失败: {e}", exc_info=True)
 
-    def _get_group_id(self, event: AstrMessageEvent) -> int | None:
-        """获取群ID
+    def _get_group_id(self, event: AstrMessageEvent) -> str | None:
+        """获取群ID（统一返回字符串；QQ 官机为 group_openid）
 
         Args:
             event: 消息事件对象
 
         Returns:
-            群ID，如果不在群聊中返回None
+            群ID字符串，如果不在群聊中返回None
         """
         # 首先尝试从 message_obj 获取（普通消息）
         group_id = getattr(event.message_obj, "group_id", None)
         if group_id:
-            return group_id
+            return str(group_id)
 
         # 如果失败，尝试从 unified_msg_origin 解析（LLM工具调用）
         try:
             origin = getattr(event, "unified_msg_origin", "")
-            if origin and ":group:" in origin:
-                # 格式: platform_name:group:group_id
+            # 格式: platform_name:GroupMessage:group_id（兼容旧格式 :group:）
+            if origin and (":GroupMessage:" in origin or ":group:" in origin):
                 parts = origin.split(":")
                 if len(parts) >= 3:
-                    return int(parts[2])
+                    return parts[2]
         except (ValueError, AttributeError):
             pass
 
@@ -177,7 +178,7 @@ class RevolverGunPlugin(Star):
         """
         return event.get_sender_name() or "玩家"
 
-    async def _get_group_role(self, event: AstrMessageEvent, user_id: int) -> str:
+    async def _get_group_role(self, event: AstrMessageEvent, user_id: str) -> str:
         """查询用户在群内的角色
 
         Returns:
@@ -187,10 +188,19 @@ class RevolverGunPlugin(Star):
             group_id = self._get_group_id(event)
             if not group_id:
                 return ""
+            # QQ 官机：群消息原始 payload 的 author.member_role 直接带角色
+            if is_qq_official_event(event):
+                raw = getattr(event.message_obj, "raw_message", None)
+                raw_data = getattr(raw, "raw_data", {}) if raw else {}
+                if isinstance(raw_data, dict):
+                    author = raw_data.get("author", {})
+                    if isinstance(author, dict):
+                        return str(author.get("member_role") or "").lower()
+                return ""
             if not hasattr(event.bot, "get_group_member_info"):
                 return ""
             member_info = await event.bot.get_group_member_info(
-                group_id=group_id, user_id=user_id, no_cache=True
+                group_id=int(group_id), user_id=int(user_id), no_cache=True
             )
             if isinstance(member_info, dict):
                 return str(member_info.get("role", "") or "")
@@ -204,13 +214,15 @@ class RevolverGunPlugin(Star):
         try:
             if event.is_admin():
                 return True
-            user_id = int(event.get_sender_id())
-            return await self._get_group_role(event, user_id) in ("owner", "admin")
+            return await self._get_group_role(event, event.get_sender_id()) in (
+                "owner",
+                "admin",
+            )
         except Exception as e:
             logger.error(f"检查群管理员权限失败: {e}")
             return False
 
-    def _init_group(self, group_id: int):
+    def _init_group(self, group_id: str):
         """初始化群状态
 
         Args:
@@ -222,18 +234,17 @@ class RevolverGunPlugin(Star):
     def _load_misfire_config(self):
         """加载走火配置
 
-        JSON 不支持 int 作为对象 key，因此读取后需要把 key 显式转回 int，
-        否则 ``self.group_misfire.get(group_id_int, ...)`` 取不到值。
+        key 统一归一为字符串（兼容历史 int key 与 QQ 官机 openid）。
         """
         try:
             if self.config_file.exists():
                 with open(self.config_file, encoding="utf-8") as f:
                     data = json.load(f)
-                # 兼容历史 str / int key，统一转 int
+                # 兼容历史 str / int key，统一转 str
                 normalized = {}
                 for k, v in data.items():
                     try:
-                        normalized[int(k)] = bool(v)
+                        normalized[str(k)] = bool(v)
                     except (TypeError, ValueError):
                         continue
                 self.group_misfire.update(normalized)
@@ -319,7 +330,7 @@ class RevolverGunPlugin(Star):
             pass
         return None
 
-    def _check_misfire(self, group_id: int) -> bool:
+    def _check_misfire(self, group_id: str) -> bool:
         """检查是否触发随机走火
 
         Args:
@@ -355,7 +366,7 @@ class RevolverGunPlugin(Star):
 
         return False
 
-    def _cleanup_game(self, group_id: int):
+    def _cleanup_game(self, group_id: str):
         """清理游戏状态和超时任务
 
         Args:
@@ -366,7 +377,7 @@ class RevolverGunPlugin(Star):
             del self.timeout_tasks[group_id]
         self.group_games.pop(group_id, None)
 
-    async def _is_user_bannable(self, event: AstrMessageEvent, user_id: int) -> bool:
+    async def _is_user_bannable(self, event: AstrMessageEvent, user_id: str) -> bool:
         """检查用户是否可以被禁言（群主/管理员免疫）
 
         无法判断角色时（接口缺失/异常）默认可以禁言，避免游戏卡住。
@@ -406,7 +417,7 @@ class RevolverGunPlugin(Star):
     async def _ban_user(
         self,
         event: AstrMessageEvent,
-        user_id: int,
+        user_id: str,
         *,
         is_bannable: bool | None = None,
     ) -> int:
@@ -414,7 +425,7 @@ class RevolverGunPlugin(Star):
 
         Args:
             event: 消息事件对象
-            user_id: 要禁言的用户ID
+            user_id: 要禁言的用户ID（QQ 官机为 member_openid）
 
         Returns:
             禁言时长（秒），如果禁言失败返回 0
@@ -434,11 +445,24 @@ class RevolverGunPlugin(Star):
         duration = random.randint(self.min_ban, self.max_ban)
         formatted_duration = self._format_ban_duration(duration)
 
+        # QQ 官机：直调官方禁言接口
+        if is_qq_official_event(event):
+            try:
+                logger.info(f"🎯 正在禁言用户 {user_id}，时长 {formatted_duration}")
+                await ban_member(event.bot.api, group_id, user_id, duration)
+                logger.info(
+                    f"✅ 用户 {user_id} 在群 {group_id} 被禁言 {formatted_duration}"
+                )
+                return duration
+            except Exception as e:
+                logger.error(f"❌ QQ官机禁言用户失败: {e}", exc_info=True)
+                return 0
+
         try:
             if hasattr(event.bot, "set_group_ban"):
                 logger.info(f"🎯 正在禁言用户 {user_id}，时长 {formatted_duration}")
                 await event.bot.set_group_ban(
-                    group_id=group_id, user_id=user_id, duration=duration
+                    group_id=int(group_id), user_id=int(user_id), duration=duration
                 )
                 logger.info(
                     f"✅ 用户 {user_id} 在群 {group_id} 被禁言 {formatted_duration}"
@@ -460,12 +484,21 @@ class RevolverGunPlugin(Star):
 
         return 0
 
+    async def _send_group_text(self, bot, group_id: str, text: str):
+        """跨平台发送群文本消息（OneBot 走 send_group_msg，QQ 官机走官方接口）"""
+        if hasattr(bot, "send_group_msg"):
+            await bot.send_group_msg(group_id=int(group_id), message=text)
+        elif hasattr(bot, "api"):  # QQ 官机 botClient
+            await send_text(bot.api, group_id, text)
+        else:
+            logger.error("❌ 当前平台不支持主动发群消息")
+
     # ========== 共享业务逻辑 ==========
 
     async def _do_load_game(
         self,
         event: AstrMessageEvent,
-        group_id: int,
+        group_id: str,
         user_name: str,
         requested: int | None,
         ai_mode: bool = False,
@@ -526,7 +559,7 @@ class RevolverGunPlugin(Star):
     async def _do_shoot_game(
         self,
         event: AstrMessageEvent,
-        group_id: int,
+        group_id: str,
         user_name: str,
         user_id: int,
         ai_mode: bool = False,
@@ -587,7 +620,7 @@ class RevolverGunPlugin(Star):
             msgs.append(f"🏁 {end_msg}\n🔄 再来一局？")
         return msgs
 
-    def _do_status(self, group_id: int) -> str:
+    def _do_status(self, group_id: str) -> str:
         """生成游戏状态文案。"""
         game = self.group_games.get(group_id)
         if not game:
@@ -611,7 +644,7 @@ class RevolverGunPlugin(Star):
     async def _do_misfire(
         self,
         event: AstrMessageEvent,
-        group_id: int,
+        group_id: str,
         user_name: str,
         user_id: int,
     ) -> str:
@@ -672,7 +705,7 @@ class RevolverGunPlugin(Star):
                 yield event.plain_result("❌ 仅限群聊使用")
                 return
             user_name = self._get_user_name(event)
-            user_id = int(event.get_sender_id())
+            user_id = event.get_sender_id()
             for msg in await self._do_shoot_game(
                 event, group_id, user_name, user_id, ai_mode=False
             ):
@@ -811,7 +844,7 @@ class RevolverGunPlugin(Star):
             group_id = self._get_group_id(event)
             if group_id and self._check_misfire(group_id):
                 user_name = self._get_user_name(event)
-                user_id = int(event.get_sender_id())
+                user_id = event.get_sender_id()
                 yield event.plain_result(
                     await self._do_misfire(event, group_id, user_name, user_id)
                 )
@@ -820,7 +853,7 @@ class RevolverGunPlugin(Star):
 
     # ========== 辅助功能 ==========
 
-    async def _start_timeout(self, event: AstrMessageEvent, group_id: int):
+    async def _start_timeout(self, event: AstrMessageEvent, group_id: str):
         """启动超时机制
 
         Args:
@@ -848,14 +881,14 @@ class RevolverGunPlugin(Star):
                     # 清理游戏状态
                     del self.group_games[group_id]
 
-                    # 发送超时通知（使用bot对象）
+                    # 发送超时通知（跨平台）
                     try:
                         timeout_msg = self.text_manager.get_text("timeout")
-                        if hasattr(bot, "send_group_msg"):
-                            await bot.send_group_msg(
-                                group_id=group_id,
-                                message=f"⏰ {timeout_msg}\n⏱️ {self.timeout} 秒无人操作\n🏁 游戏已自动结束",
-                            )
+                        await self._send_group_text(
+                            bot,
+                            group_id,
+                            f"⏰ {timeout_msg}\n⏱️ {self.timeout} 秒无人操作\n🏁 游戏已自动结束",
+                        )
                     except Exception as e:
                         logger.error(f"发送超时通知失败: {e}")
 
@@ -981,12 +1014,10 @@ class RevolverGunPlugin(Star):
             for msg in await self._do_load_game(
                 event, group_id, user_name, bullets, ai_mode=True
             ):
-                await event.bot.send_group_msg(group_id=group_id, message=msg)
+                await self._send_group_text(event.bot, group_id, msg)
         except Exception as e:
             logger.error(f"AI启动游戏失败: {e}")
-            await event.bot.send_group_msg(
-                group_id=group_id, message="❌ 游戏启动失败，请重试"
-            )
+            await self._send_group_text(event.bot, group_id, "❌ 游戏启动失败，请重试")
 
     async def ai_join_game(self, event: AstrMessageEvent):
         """AI参与游戏 - 供 AI 工具调用"""
@@ -996,16 +1027,14 @@ class RevolverGunPlugin(Star):
             return
         try:
             user_name = self._get_user_name(event)
-            user_id = int(event.get_sender_id())
+            user_id = event.get_sender_id()
             for msg in await self._do_shoot_game(
                 event, group_id, user_name, user_id, ai_mode=True
             ):
-                await event.bot.send_group_msg(group_id=group_id, message=msg)
+                await self._send_group_text(event.bot, group_id, msg)
         except Exception as e:
             logger.error(f"AI参与游戏失败: {e}")
-            await event.bot.send_group_msg(
-                group_id=group_id, message="❌ 操作失败，请重试"
-            )
+            await self._send_group_text(event.bot, group_id, "❌ 操作失败，请重试")
 
     async def ai_check_status(self, event: AstrMessageEvent):
         """AI查询游戏状态 - 供 AI 工具调用"""
@@ -1014,14 +1043,10 @@ class RevolverGunPlugin(Star):
             logger.warning("AI工具无法获取group_id")
             return
         try:
-            await event.bot.send_group_msg(
-                group_id=group_id, message=self._do_status(group_id)
-            )
+            await self._send_group_text(event.bot, group_id, self._do_status(group_id))
         except Exception as e:
             logger.error(f"AI查询状态失败: {e}")
-            await event.bot.send_group_msg(
-                group_id=group_id, message="❌ 查询失败，请重试"
-            )
+            await self._send_group_text(event.bot, group_id, "❌ 查询失败，请重试")
 
     async def terminate(self):
         """插件卸载清理

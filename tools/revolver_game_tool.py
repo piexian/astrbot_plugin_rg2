@@ -7,17 +7,17 @@ from typing import Optional
 class BaseRevolverTool:
     """左轮手枪工具基类，包含通用辅助方法"""
 
-    def _get_group_id(self, event: AstrMessageEvent) -> Optional[int]:
-        """获取群ID，优先使用 message_obj，回退到 unified_msg_origin（兼容 LLM 工具调用）。"""
+    def _get_group_id(self, event: AstrMessageEvent) -> Optional[str]:
+        """获取群ID（字符串），优先使用 message_obj，回退到 unified_msg_origin（兼容 LLM 工具调用）。"""
         group_id = getattr(event.message_obj, "group_id", None)
         if group_id:
-            return group_id
+            return str(group_id)
         try:
             origin = getattr(event, "unified_msg_origin", "")
-            if origin and ":group:" in origin:
+            if origin and (":GroupMessage:" in origin or ":group:" in origin):
                 parts = origin.split(":")
                 if len(parts) >= 3:
-                    return int(parts[2])
+                    return parts[2]
         except (ValueError, AttributeError):
             pass
         return None
