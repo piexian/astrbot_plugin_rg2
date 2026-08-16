@@ -89,6 +89,7 @@ class RevolverGunPlugin(Star):
         self.max_ban = self.config.get("max_ban_seconds", 300)
         self.default_misfire = self.config.get("misfire_enabled_by_default", False)
         self.ai_trigger_delay = self.config.get("ai_trigger_delay", 2)
+        self._last_ban_error = ""  # 最近一次禁言失败的原因（供回复文案使用）
 
         # QQ 官机卡片交互
         self.qq_card_enabled = self.config.get("qq_card_enabled", True)
@@ -563,6 +564,7 @@ class RevolverGunPlugin(Star):
 
         duration = random.randint(self.min_ban, self.max_ban)
         formatted_duration = self._format_ban_duration(duration)
+        self._last_ban_error = ""
 
         # QQ 官机：直调官方禁言接口
         if is_qq_official_event(event):
@@ -575,6 +577,10 @@ class RevolverGunPlugin(Star):
                 return duration
             except Exception as e:
                 logger.error(f"❌ QQ官机禁言用户失败: {e}", exc_info=True)
+                # 权限类错误透传给玩家，避免只看到「禁言失败」
+                err = str(e)
+                if "管理员" in err or "权限" in err:
+                    self._last_ban_error = "机器人需要群管理员权限"
                 return 0
 
         try:
@@ -717,6 +723,8 @@ class RevolverGunPlugin(Star):
                     ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}"
                 else:
                     ban_msg = "⚠️ 禁言失败！"
+                    if self._last_ban_error:
+                        ban_msg += f"（{self._last_ban_error}）"
                 logger.info(
                     f"💥 {prefix}用户 {user_name}({user_id}) 在群 {group_id} 中弹"
                 )
@@ -779,6 +787,8 @@ class RevolverGunPlugin(Star):
             ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}！"
         else:
             ban_msg = "⚠️ 禁言失败！"
+            if self._last_ban_error:
+                ban_msg += f"（{self._last_ban_error}）"
         logger.info(f"💥 群 {group_id} 用户 {user_name}({user_id}) 触发随机走火")
         misfire_desc = self.text_manager.get_text("misfire_descriptions")
         reaction_msg = self.text_manager.get_text(

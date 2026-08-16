@@ -74,6 +74,22 @@ async def test_ban_user_qqofficial(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ban_user_qqofficial_permission_hint(tmp_path, monkeypatch):
+    """QQ 官机禁言因权限失败时，记录用户可读的原因提示。"""
+    plugin = make_plugin(tmp_path, monkeypatch)
+
+    async def fake_ban(api, group_openid, member_openid, seconds):
+        raise RuntimeError("机器人不是群管理员")
+
+    monkeypatch.setattr("astrbot_plugin_rg2.main.ban_member", fake_ban)
+    event = make_event(platform="qq_official", group_id="GID", sender="MID")
+    event.bot = SimpleNamespace(api=object())
+    duration = await plugin._ban_user(event, "MID", is_bannable=True)
+    assert duration == 0
+    assert plugin._last_ban_error == "机器人需要群管理员权限"
+
+
+@pytest.mark.asyncio
 async def test_ban_user_onebot_unchanged(tmp_path, monkeypatch):
     plugin = make_plugin(tmp_path, monkeypatch)
     bot = SimpleNamespace(set_group_ban=AsyncMock())
