@@ -90,10 +90,21 @@ def test_build_game_keyboard():
 def test_parse_interaction():
     assert parse_interaction("rg2:shoot:GID") == ("shoot", "GID")
     assert parse_interaction("rg2:status:GID") == ("status", "GID")
+    assert parse_interaction("rg2:load:GID") == ("load", "GID")
     assert parse_interaction("rg2:unknown:GID") is None
     assert parse_interaction("other:shoot:GID") is None
     assert parse_interaction("") is None
     assert parse_interaction(None) is None
+
+
+def test_build_start_keyboard():
+    from astrbot_plugin_rg2.core.qq_official import build_start_keyboard
+
+    kb = build_start_keyboard("GID")
+    buttons = kb["content"]["rows"][0]["buttons"]
+    assert len(buttons) == 1
+    assert buttons[0]["action"]["data"] == "rg2:load:GID"
+    assert buttons[0]["action"]["type"] == 1
 
 
 def test_adapter_class_names_importable():

@@ -14,6 +14,7 @@ from .core.qq_official import (
     QQInteractionShim,
     ban_member,
     build_game_keyboard,
+    build_start_keyboard,
     get_qq_bot_client,
     is_qq_official_event,
     parse_interaction,
@@ -212,7 +213,10 @@ class RevolverGunPlugin(Star):
         member_openid = getattr(interaction, "group_member_openid", "") or "unknown"
         shim = QQInteractionShim(self._qq_client, group_openid, member_openid)
         try:
-            if action == "shoot":
+            if action == "load":
+                # 快速开始：随机装填（与 /装填 无参一致，所有用户可用）
+                msgs = await self._do_load_game(shim, group_openid, "玩家", None)
+            elif action == "shoot":
                 self._init_group(group_openid)
                 msgs = await self._do_shoot_game(
                     shim, group_openid, "玩家", member_openid
@@ -221,16 +225,27 @@ class RevolverGunPlugin(Star):
                 msgs = [self._do_status(group_openid)]
             content = "\n".join(msgs)
             event_id = getattr(interaction, "event_id", None)
-            if self.qq_card_enabled and group_openid in self.group_games:
-                # 游戏进行中：结果连同新按钮卡片一起发，按钮点击后不可复原，
-                # 必须补发新卡片保证可以继续点
-                await send_card(
-                    self._qq_client.api,
-                    group_openid,
-                    content,
-                    build_game_keyboard(group_openid),
-                    event_id=event_id,
+            if self.qq_card_enabled:
+                # 按钮点击后不可复原，每次交互都补发带新按钮的卡片；
+                # 键盘随游戏状态切换（进行中=开枪/状态，未开始=快速开始）
+                keyboard = (
+                    build_game_keyboard(group_openid)
+                    if group_openid in self.group_games
+                    else build_start_keyboard(group_openid)
                 )
+                try:
+                    await send_card(
+                        self._qq_client.api,
+                        group_openid,
+                        content,
+                        keyboard,
+                        event_id=event_id,
+                    )
+                except Exception as e:
+                    logger.error(f"回调卡片发送失败，回退纯文本: {e}")
+                    await send_text(
+                        self._qq_client.api, group_openid, content, event_id=event_id
+                    )
             else:
                 await send_text(
                     self._qq_client.api, group_openid, content, event_id=event_id
@@ -258,6 +273,33 @@ class RevolverGunPlugin(Star):
             return True
         except Exception as e:
             logger.error(f"发送游戏卡片失败，回退纯文本: {e}")
+            return False
+
+    async def _reply_status_result(
+        self, event: AstrMessageEvent, group_id: str, text: str
+    ) -> bool:
+        """QQ 官机且开启卡片时状态回复渲染为卡片，返回 True；否则返回 False"""
+        if not (self.qq_card_enabled and is_qq_official_event(event)):
+            return False
+        # 键盘随游戏状态切换：进行中=开枪/状态，未开始=快速开始
+        keyboard = (
+            build_game_keyboard(group_id)
+            if group_id in self.group_games
+            else build_start_keyboard(group_id)
+        )
+        try:
+            await send_card(
+                event.bot.api,
+                group_id,
+                text,
+                keyboard,
+                msg_id=getattr(event.message_obj, "message_id", None),
+            )
+            # 卡片已通过 API 直发，标记事件已消费，防止继续流入 LLM
+            event.stop_event()
+            return True
+        except Exception as e:
+            logger.error(f"发送状态卡片失败，回退纯文本: {e}")
             return False
 
     def _get_group_id(self, event: AstrMessageEvent) -> str | None:
@@ -863,7 +905,10 @@ class RevolverGunPlugin(Star):
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
                 return
-            yield event.plain_result(self._do_status(group_id))
+            status_text = self._do_status(group_id)
+            if await self._reply_status_result(event, group_id, status_text):
+                return
+            yield event.plain_result(status_text)
         except Exception as e:
             logger.error(f"查询游戏状态失败: {e}")
             yield event.plain_result("❌ 查询失败，请重试")

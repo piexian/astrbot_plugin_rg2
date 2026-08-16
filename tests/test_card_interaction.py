@@ -35,6 +35,7 @@ async def test_interaction_not_ours(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_interaction_status(tmp_path, monkeypatch):
+    """无游戏时点状态：回复带「开始游戏」按钮的卡片。"""
     plugin = make_plugin(tmp_path, monkeypatch)
     plugin._qq_client = SimpleNamespace(
         api=SimpleNamespace(post_group_message=AsyncMock())
@@ -45,7 +46,34 @@ async def test_interaction_status(tmp_path, monkeypatch):
     kw = plugin._qq_client.api.post_group_message.call_args.kwargs
     assert kw["group_openid"] == "GID"
     assert kw["event_id"] == "E1"  # 被动回复，不占主动频次
-    assert "没有游戏进行中" in kw["content"]
+    assert kw["msg_type"] == 2
+    assert "没有游戏进行中" in kw["markdown"]["content"]
+    buttons = kw["keyboard"]["content"]["rows"][0]["buttons"]
+    assert buttons[0]["action"]["data"] == "rg2:load:GID"
+
+
+@pytest.mark.asyncio
+async def test_interaction_load_starts_game(tmp_path, monkeypatch):
+    """点「开始游戏」：随机装填开局并回复带开枪按钮的卡片。"""
+    plugin = make_plugin(tmp_path, monkeypatch)
+    plugin._qq_client = SimpleNamespace(
+        api=SimpleNamespace(post_group_message=AsyncMock())
+    )
+    interaction = make_interaction("rg2:load:GID")
+    try:
+        assert await plugin._handle_interaction(interaction) is True
+        interaction._api.on_interaction_result.assert_awaited_once_with("I1", 0)
+        assert "GID" in plugin.group_games  # 游戏已创建
+        kw = plugin._qq_client.api.post_group_message.call_args.kwargs
+        assert kw["msg_type"] == 2
+        buttons = kw["keyboard"]["content"]["rows"][0]["buttons"]
+        assert {b["action"]["data"] for b in buttons} == {
+            "rg2:shoot:GID",
+            "rg2:status:GID",
+        }
+    finally:
+        for task in plugin.timeout_tasks.values():
+            task.cancel()
 
 
 @pytest.mark.asyncio

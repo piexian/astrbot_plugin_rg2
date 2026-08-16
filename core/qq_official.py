@@ -26,7 +26,7 @@ except ImportError:  # 兼容旧版本 AstrBot
 _QQ_OFFICIAL_NAMES = ("qq_official", "qq_official_webhook")
 
 QQ_INTERACTION_PREFIX = "rg2:"
-_QQ_ACTIONS = ("shoot", "status")
+_QQ_ACTIONS = ("shoot", "status", "load")
 
 
 def is_qq_official_event(event) -> bool:
@@ -127,28 +127,62 @@ async def send_card(
     )
 
 
+def _make_button(btn_id: str, label: str, visited: str, style: int, data: str) -> dict:
+    """构造单个回调按钮（点击触发 INTERACTION_CREATE）。"""
+    return {
+        "id": btn_id,
+        "render_data": {"label": label, "visited_label": visited, "style": style},
+        "action": {
+            "type": 1,  # 回调按钮，触发 INTERACTION_CREATE
+            "permission": {"type": 2},  # 所有人可点
+            "data": data,
+            "unsupport_tips": "当前客户端不支持按钮，请使用文字指令",
+        },
+    }
+
+
 def build_game_keyboard(group_openid: str) -> dict:
     """构造游戏操作键盘：开枪 / 状态两个回调按钮。"""
-
-    def _button(btn_id: str, label: str, visited: str, style: int, action: str) -> dict:
-        return {
-            "id": btn_id,
-            "render_data": {"label": label, "visited_label": visited, "style": style},
-            "action": {
-                "type": 1,  # 回调按钮，触发 INTERACTION_CREATE
-                "permission": {"type": 2},  # 所有人可点
-                "data": f"{QQ_INTERACTION_PREFIX}{action}:{group_openid}",
-                "unsupport_tips": "当前客户端不支持按钮，请使用文字指令",
-            },
-        }
-
     return {
         "content": {
             "rows": [
                 {
                     "buttons": [
-                        _button("rg2_shoot", "🔫 开枪", "💥 已开枪", 1, "shoot"),
-                        _button("rg2_status", "📊 状态", "📊 状态", 0, "status"),
+                        _make_button(
+                            "rg2_shoot",
+                            "🔫 开枪",
+                            "💥 已开枪",
+                            1,
+                            f"{QQ_INTERACTION_PREFIX}shoot:{group_openid}",
+                        ),
+                        _make_button(
+                            "rg2_status",
+                            "📊 状态",
+                            "📊 状态",
+                            0,
+                            f"{QQ_INTERACTION_PREFIX}status:{group_openid}",
+                        ),
+                    ]
+                }
+            ]
+        }
+    }
+
+
+def build_start_keyboard(group_openid: str) -> dict:
+    """构造快速开始键盘：开始游戏（随机装填）按钮。"""
+    return {
+        "content": {
+            "rows": [
+                {
+                    "buttons": [
+                        _make_button(
+                            "rg2_load",
+                            "🎮 开始游戏",
+                            "🎮 已开始",
+                            1,
+                            f"{QQ_INTERACTION_PREFIX}load:{group_openid}",
+                        )
                     ]
                 }
             ]
