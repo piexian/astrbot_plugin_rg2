@@ -10,7 +10,16 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
-from .core.qq_official import ban_member, is_qq_official_event, send_text
+from .core.qq_official import (
+    QQInteractionShim,
+    ban_member,
+    build_game_keyboard,
+    get_qq_bot_client,
+    is_qq_official_event,
+    parse_interaction,
+    send_card,
+    send_text,
+)
 from .text_manager import TextManager
 
 # 插件元数据（仅 register 装饰器使用，真实版本号从 metadata.yaml 读取）
@@ -81,6 +90,10 @@ class RevolverGunPlugin(Star):
         self.default_misfire = self.config.get("misfire_enabled_by_default", False)
         self.ai_trigger_delay = self.config.get("ai_trigger_delay", 2)
 
+        # QQ 官机卡片交互
+        self.qq_card_enabled = self.config.get("qq_card_enabled", True)
+        self._qq_client = None  # on_platform_loaded 时初始化
+
         # 弹膛/装弹相关
         self.max_bullet_count = self.config.get("max_bullet_count", 6)
         self.chamber_count = self.config.get("chamber_count", self.max_bullet_count)
@@ -139,6 +152,98 @@ class RevolverGunPlugin(Star):
             logger.info("左轮手枪统一触发器工具注册成功")
         except Exception as e:
             logger.error(f"注册函数工具失败: {e}", exc_info=True)
+
+    # ========== QQ 官机卡片交互 ==========
+
+    async def initialize(self):
+        """插件初始化：安装 QQ 官机按钮回调钩子"""
+        self._install_qq_interaction_hook()
+
+    @filter.on_platform_loaded()
+    async def on_platform_loaded(self):
+        """平台加载完成后再次尝试安装钩子（平台晚于插件加载的场景）"""
+        self._install_qq_interaction_hook()
+
+    def _install_qq_interaction_hook(self):
+        """给 QQ 官机 client 挂 on_interaction_create（链式，幂等）"""
+        if self._qq_client is not None:
+            return
+        try:
+            client = get_qq_bot_client(self.context)
+        except Exception as e:
+            logger.error(f"获取QQ官机client失败: {e}")
+            return
+        if client is None:
+            return
+        # 开启互动事件 intent（1<<25）
+        intents = getattr(client, "intents", None)
+        if isinstance(intents, int):
+            client.intents = intents | (1 << 25)
+        elif intents is not None:
+            intents.interaction = True
+        previous = getattr(client, "on_interaction_create", None)
+
+        async def on_interaction_create(interaction, _prev=previous):
+            if await self._handle_interaction(interaction):
+                return
+            if _prev is not None:
+                await _prev(interaction)
+
+        client.on_interaction_create = on_interaction_create
+        self._qq_client = client
+        logger.info("QQ官机按钮回调钩子安装成功")
+
+    async def _handle_interaction(self, interaction) -> bool:
+        """处理按钮回调，返回 True 表示已消费"""
+        resolved = getattr(getattr(interaction, "data", None), "resolved", None)
+        parsed = parse_interaction(getattr(resolved, "button_data", None))
+        if not parsed:
+            return False
+        action, group_openid = parsed
+        # 校验回调与事件来自同一群
+        if group_openid != getattr(interaction, "group_openid", group_openid):
+            await interaction._api.on_interaction_result(interaction.id, 1)
+            return True
+        await interaction._api.on_interaction_result(interaction.id, 0)
+        if self._qq_client is None:
+            return True
+        member_openid = getattr(interaction, "group_member_openid", "") or "unknown"
+        shim = QQInteractionShim(self._qq_client, group_openid, member_openid)
+        try:
+            if action == "shoot":
+                self._init_group(group_openid)
+                msgs = await self._do_shoot_game(shim, group_openid, "玩家", member_openid)
+            else:
+                msgs = [self._do_status(group_openid)]
+            for msg in msgs:
+                await send_text(
+                    self._qq_client.api,
+                    group_openid,
+                    msg,
+                    event_id=getattr(interaction, "event_id", None),
+                )
+        except Exception as e:
+            logger.error(f"按钮回调处理失败: {e}", exc_info=True)
+        return True
+
+    async def _reply_load_result(
+        self, event: AstrMessageEvent, group_id: str, msgs: list[str]
+    ) -> bool:
+        """QQ 官机且开启卡片时直接发卡片，返回 True；否则返回 False 走原文本逻辑"""
+        if not (self.qq_card_enabled and is_qq_official_event(event)):
+            return False
+        try:
+            await send_card(
+                event.bot.api,
+                group_id,
+                "\n".join(msgs),
+                build_game_keyboard(group_id),
+                msg_id=getattr(event.message_obj, "message_id", None),
+            )
+            return True
+        except Exception as e:
+            logger.error(f"发送游戏卡片失败，回退纯文本: {e}")
+            return False
 
     def _get_group_id(self, event: AstrMessageEvent) -> str | None:
         """获取群ID（统一返回字符串；QQ 官机为 group_openid）
@@ -684,9 +789,12 @@ class RevolverGunPlugin(Star):
                 return
             user_name = self._get_user_name(event)
             requested = self._parse_bullet_count(event.message_str or "")
-            for msg in await self._do_load_game(
+            msgs = await self._do_load_game(
                 event, group_id, user_name, requested, ai_mode=False
-            ):
+            )
+            if await self._reply_load_result(event, group_id, msgs):
+                return
+            for msg in msgs:
                 yield event.plain_result(msg)
         except Exception as e:
             logger.error(f"装填子弹失败: {e}")
@@ -1011,9 +1119,12 @@ class RevolverGunPlugin(Star):
             return
         try:
             user_name = self._get_user_name(event)
-            for msg in await self._do_load_game(
+            msgs = await self._do_load_game(
                 event, group_id, user_name, bullets, ai_mode=True
-            ):
+            )
+            if await self._reply_load_result(event, group_id, msgs):
+                return
+            for msg in msgs:
                 await self._send_group_text(event.bot, group_id, msg)
         except Exception as e:
             logger.error(f"AI启动游戏失败: {e}")
