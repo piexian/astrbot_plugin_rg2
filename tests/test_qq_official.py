@@ -96,6 +96,39 @@ def test_parse_interaction():
     assert parse_interaction(None) is None
 
 
+def test_adapter_class_names_importable():
+    """两个适配器类名必须与 AstrBot 源码一致（防回归：类名写错会导致钩子静默装不上）。"""
+    from astrbot.core.platform.sources.qqofficial.qqofficial_platform_adapter import (
+        QQOfficialPlatformAdapter,
+    )
+    from astrbot.core.platform.sources.qqofficial_webhook.qo_webhook_adapter import (
+        QQOfficialWebhookPlatformAdapter,
+    )
+
+    assert QQOfficialPlatformAdapter is not None
+    assert QQOfficialWebhookPlatformAdapter is not None
+
+
+def test_get_qq_bot_client_finds_adapter():
+    from types import SimpleNamespace
+
+    from astrbot.core.platform.sources.qqofficial.qqofficial_platform_adapter import (
+        QQOfficialPlatformAdapter,
+    )
+
+    from astrbot_plugin_rg2.core.qq_official import get_qq_bot_client
+
+    inst = QQOfficialPlatformAdapter.__new__(QQOfficialPlatformAdapter)
+    client = object()
+    inst.get_client = lambda: client
+    ctx = SimpleNamespace(
+        platform_manager=SimpleNamespace(get_insts=lambda: [SimpleNamespace(), inst])
+    )
+    assert get_qq_bot_client(ctx) is client
+    empty = SimpleNamespace(platform_manager=SimpleNamespace(get_insts=lambda: []))
+    assert get_qq_bot_client(empty) is None
+
+
 def test_shim():
     bot = object()
     shim = QQInteractionShim(bot, "GID", "MID")

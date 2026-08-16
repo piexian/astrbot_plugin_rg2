@@ -39,17 +39,27 @@ def is_qq_official_event(event) -> bool:
 
 def get_qq_bot_client(context) -> Any | None:
     """从 platform_manager 获取 QQ 官机的 botpy client（websocket/webhook 均可）。"""
+    adapter_classes = []
     try:
         from astrbot.core.platform.sources.qqofficial.qqofficial_platform_adapter import (
             QQOfficialPlatformAdapter,
         )
-        from astrbot.core.platform.sources.qqofficial_webhook.qo_webhook_adapter import (
-            QQOfficialWebhookAdapter,
-        )
+
+        adapter_classes.append(QQOfficialPlatformAdapter)
     except ImportError:
+        pass
+    try:
+        from astrbot.core.platform.sources.qqofficial_webhook.qo_webhook_adapter import (
+            QQOfficialWebhookPlatformAdapter,
+        )
+
+        adapter_classes.append(QQOfficialWebhookPlatformAdapter)
+    except ImportError:
+        pass
+    if not adapter_classes or context is None:
         return None
     for platform in context.platform_manager.get_insts():
-        if isinstance(platform, (QQOfficialPlatformAdapter, QQOfficialWebhookAdapter)):
+        if isinstance(platform, tuple(adapter_classes)):
             return platform.get_client()
     return None
 

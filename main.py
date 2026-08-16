@@ -174,6 +174,7 @@ class RevolverGunPlugin(Star):
             logger.error(f"获取QQ官机client失败: {e}")
             return
         if client is None:
+            logger.debug("未找到QQ官机平台实例，跳过按钮回调钩子安装")
             return
         # 开启互动事件 intent（1<<25）
         intents = getattr(client, "intents", None)
@@ -242,6 +243,8 @@ class RevolverGunPlugin(Star):
                 build_game_keyboard(group_id),
                 msg_id=getattr(event.message_obj, "message_id", None),
             )
+            # 卡片已通过 API 直发，标记事件已消费，防止继续流入 LLM
+            event.stop_event()
             return True
         except Exception as e:
             logger.error(f"发送游戏卡片失败，回退纯文本: {e}")

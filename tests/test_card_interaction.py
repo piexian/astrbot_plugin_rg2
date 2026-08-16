@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -69,12 +69,15 @@ async def test_reply_load_result_card(tmp_path, monkeypatch):
         message_obj=SimpleNamespace(group_id="GID", message_id="M1"),
         bot=SimpleNamespace(api=SimpleNamespace()),
         get_platform_name=lambda: "qq_official",
+        stop_event=MagicMock(),
     )
     handled = await plugin._reply_load_result(event, "GID", ["装填完毕"])
     assert handled is True
     kw = send_card_mock.call_args
     assert kw.args[1] == "GID"
     assert kw.kwargs["msg_id"] == "M1"
+    # 卡片直发后必须 stop_event，否则事件会继续流入 LLM
+    event.stop_event.assert_called_once()
 
 
 @pytest.mark.asyncio
