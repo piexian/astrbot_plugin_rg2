@@ -178,10 +178,10 @@ class RevolverGunPlugin(Star):
         if client is None:
             logger.debug("未找到QQ官机平台实例，跳过按钮回调钩子安装")
             return
-        # 开启互动事件 intent（1<<25）
+        # 开启互动事件 intent（群消息 1<<25 + 互动事件 1<<26）
         intents = getattr(client, "intents", None)
         if isinstance(intents, int):
-            client.intents = intents | (1 << 25)
+            client.intents = intents | (1 << 25) | (1 << 26)
         elif intents is not None:
             intents.interaction = True
         previous = getattr(client, "on_interaction_create", None)
@@ -619,10 +619,12 @@ class RevolverGunPlugin(Star):
                 return duration
             except Exception as e:
                 logger.error(f"❌ QQ官机禁言用户失败: {e}", exc_info=True)
-                # 权限类错误透传给玩家，避免只看到「禁言失败」
+                # 区分失败原因：机器人没权限 / 对方是群主管理员（免疫）
                 err = str(e)
-                if "管理员" in err or "权限" in err:
-                    self._last_ban_error = "机器人需要群管理员权限"
+                if "机器人不是群管理员" in err or ("机器人" in err and "权限" in err):
+                    self._last_ban_error = "bot_admin"
+                elif "群主" in err or "管理员" in err or "普通成员" in err:
+                    self._last_ban_error = "target_immune"
                 return 0
 
         try:
@@ -650,6 +652,14 @@ class RevolverGunPlugin(Star):
                 logger.error("💡 解决方法：将机器人设置为群管理员")
 
         return 0
+
+    def _format_ban_failure(self) -> str:
+        """根据最近一次禁言失败原因生成回复文案"""
+        if self._last_ban_error == "target_immune":
+            return "⚠️ 对方是群主/管理员，免疫禁言！"
+        if self._last_ban_error == "bot_admin":
+            return "⚠️ 禁言失败！（机器人需要群管理员权限）"
+        return "⚠️ 禁言失败！"
 
     async def _send_group_text(self, bot, group_id: str, text: str):
         """跨平台发送群文本消息（OneBot 走 send_group_msg，QQ 官机走官方接口）"""
@@ -764,9 +774,7 @@ class RevolverGunPlugin(Star):
                 if ban_duration > 0:
                     ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}"
                 else:
-                    ban_msg = "⚠️ 禁言失败！"
-                    if self._last_ban_error:
-                        ban_msg += f"（{self._last_ban_error}）"
+                    ban_msg = self._format_ban_failure()
                 logger.info(
                     f"💥 {prefix}用户 {user_name}({user_id}) 在群 {group_id} 中弹"
                 )
@@ -828,9 +836,7 @@ class RevolverGunPlugin(Star):
         if ban_duration > 0:
             ban_msg = f"🔇 禁言 {self._format_ban_duration(ban_duration)}！"
         else:
-            ban_msg = "⚠️ 禁言失败！"
-            if self._last_ban_error:
-                ban_msg += f"（{self._last_ban_error}）"
+            ban_msg = self._format_ban_failure()
         logger.info(f"💥 群 {group_id} 用户 {user_name}({user_id}) 触发随机走火")
         misfire_desc = self.text_manager.get_text("misfire_descriptions")
         reaction_msg = self.text_manager.get_text(

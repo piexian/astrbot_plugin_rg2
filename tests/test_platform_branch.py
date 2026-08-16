@@ -75,7 +75,7 @@ async def test_ban_user_qqofficial(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ban_user_qqofficial_permission_hint(tmp_path, monkeypatch):
-    """QQ 官机禁言因权限失败时，记录用户可读的原因提示。"""
+    """QQ 官机禁言失败时按错误内容区分：机器人没权限 / 对方是管理免疫。"""
     plugin = make_plugin(tmp_path, monkeypatch)
 
     async def fake_ban(api, group_openid, member_openid, seconds):
@@ -84,9 +84,17 @@ async def test_ban_user_qqofficial_permission_hint(tmp_path, monkeypatch):
     monkeypatch.setattr("astrbot_plugin_rg2.main.ban_member", fake_ban)
     event = make_event(platform="qq_official", group_id="GID", sender="MID")
     event.bot = SimpleNamespace(api=object())
-    duration = await plugin._ban_user(event, "MID", is_bannable=True)
-    assert duration == 0
-    assert plugin._last_ban_error == "机器人需要群管理员权限"
+    assert await plugin._ban_user(event, "MID", is_bannable=True) == 0
+    assert plugin._last_ban_error == "bot_admin"
+    assert "机器人需要群管理员权限" in plugin._format_ban_failure()
+
+    async def fake_ban_immune(api, group_openid, member_openid, seconds):
+        raise RuntimeError("只能操作普通成员，不能操作群主，管理员")
+
+    monkeypatch.setattr("astrbot_plugin_rg2.main.ban_member", fake_ban_immune)
+    assert await plugin._ban_user(event, "MID", is_bannable=True) == 0
+    assert plugin._last_ban_error == "target_immune"
+    assert "免疫" in plugin._format_ban_failure()
 
 
 @pytest.mark.asyncio
