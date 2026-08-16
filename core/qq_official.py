@@ -160,7 +160,11 @@ class QQInteractionShim:
     """按钮回调场景的最小 event 替身，供游戏逻辑复用。"""
 
     def __init__(
-        self, bot, group_openid: str, member_openid: str, platform_name: str = "qq_official"
+        self,
+        bot,
+        group_openid: str,
+        member_openid: str,
+        platform_name: str = "qq_official",
     ):
         self.bot = bot
         self.message_obj = SimpleNamespace(group_id=group_openid)

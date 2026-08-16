@@ -29,7 +29,7 @@ PLUGIN_DESCRIPTION = (
     "一个刺激的群聊轮盘赌游戏插件，支持管理员装填子弹、用户开枪对决、随机走火等功能"
 )
 PLUGIN_REPO = "https://github.com/piexian/astrbot_plugin_rg2"
-_FALLBACK_VERSION = "1.2.7"
+_FALLBACK_VERSION = "1.3.0"
 
 # 导入事件类型
 try:
@@ -212,7 +212,9 @@ class RevolverGunPlugin(Star):
         try:
             if action == "shoot":
                 self._init_group(group_openid)
-                msgs = await self._do_shoot_game(shim, group_openid, "玩家", member_openid)
+                msgs = await self._do_shoot_game(
+                    shim, group_openid, "玩家", member_openid
+                )
             else:
                 msgs = [self._do_status(group_openid)]
             for msg in msgs:
