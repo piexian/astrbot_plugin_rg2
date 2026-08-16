@@ -206,3 +206,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .claude
+
+# 本地设计/调研文档，不进入仓库
+docs/superpowers/

@@ -65,6 +65,12 @@
     "default": 2,
     "hint": "AI触发工具后的等待时间。修改后需重载插件生效"
   },
+  "qq_card_enabled": {
+    "description": "QQ官方机器人平台启用卡片交互（Markdown卡片+按钮）",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后QQ官机群聊中装填会发送带按钮的卡片，点击按钮即可开枪/查状态"
+  },
   "custom_texts": {
     "type": "template_list",
     "description": "自定义文本（按分类添加任意条数，留空则使用 revolver_game_texts.yml 默认文本）",
