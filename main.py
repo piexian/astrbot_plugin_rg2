@@ -218,12 +218,21 @@ class RevolverGunPlugin(Star):
                 )
             else:
                 msgs = [self._do_status(group_openid)]
-            for msg in msgs:
-                await send_text(
+            content = "\n".join(msgs)
+            event_id = getattr(interaction, "event_id", None)
+            if self.qq_card_enabled and group_openid in self.group_games:
+                # 游戏进行中：结果连同新按钮卡片一起发，按钮点击后不可复原，
+                # 必须补发新卡片保证可以继续点
+                await send_card(
                     self._qq_client.api,
                     group_openid,
-                    msg,
-                    event_id=getattr(interaction, "event_id", None),
+                    content,
+                    build_game_keyboard(group_openid),
+                    event_id=event_id,
+                )
+            else:
+                await send_text(
+                    self._qq_client.api, group_openid, content, event_id=event_id
                 )
         except Exception as e:
             logger.error(f"按钮回调处理失败: {e}", exc_info=True)

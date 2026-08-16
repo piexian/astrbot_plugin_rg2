@@ -61,6 +61,39 @@ async def test_interaction_wrong_group(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_interaction_shoot_sends_fresh_card(tmp_path, monkeypatch):
+    """游戏进行中点击开枪：结果以带新按钮的卡片下发（按钮点击后不可复原）。"""
+    import datetime
+
+    plugin = make_plugin(tmp_path, monkeypatch)
+    api = SimpleNamespace(post_group_message=AsyncMock())
+    plugin._qq_client = SimpleNamespace(api=api)
+    # 一空一实，首枪空弹，游戏继续
+    plugin.group_games["GID"] = {
+        "chambers": [False, True, False, False, False, False],
+        "current": 0,
+        "start_time": datetime.datetime.now(),
+        "shot_count": 0,
+    }
+    interaction = make_interaction("rg2:shoot:GID")
+    try:
+        assert await plugin._handle_interaction(interaction) is True
+        interaction._api.on_interaction_result.assert_awaited_once_with("I1", 0)
+        kw = api.post_group_message.call_args.kwargs
+        assert kw["msg_type"] == 2
+        assert kw["event_id"] == "E1"
+        buttons = kw["keyboard"]["content"]["rows"][0]["buttons"]
+        assert {b["action"]["data"] for b in buttons} == {
+            "rg2:shoot:GID",
+            "rg2:status:GID",
+        }
+        assert "GID" in plugin.group_games  # 游戏仍在进行
+    finally:
+        for task in plugin.timeout_tasks.values():
+            task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_reply_load_result_card(tmp_path, monkeypatch):
     plugin = make_plugin(tmp_path, monkeypatch)
     send_card_mock = AsyncMock()
