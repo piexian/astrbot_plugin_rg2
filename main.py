@@ -225,6 +225,7 @@ class RevolverGunPlugin(Star):
             resolved = (ev.raw.get("data") or {}).get("resolved") or {}
             parsed = parse_interaction(resolved.get("button_data"))
             if not parsed:
+                logger.debug(f"忽略非本插件按钮回调: {resolved.get('button_data')}")
                 return
             action, group_openid = parsed
             # 校验回调与事件来自同一群
