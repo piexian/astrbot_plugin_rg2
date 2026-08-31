@@ -3,7 +3,7 @@
 基于 AstrBot 官方插件规范开发的群聊轮盘赌游戏插件，采用现代化代码架构，提供刺激的左轮手枪对决体验。
 
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-blue.svg)](https://docs.astrbot.app/)
-[![Version](https://img.shields.io/badge/version-1.3.0-green.svg)](https://github.com/piexian/astrbot_plugin_rg2)
+[![Version](https://img.shields.io/badge/version-1.3.5-green.svg)](https://github.com/piexian/astrbot_plugin_rg2)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
 ## ✨ 核心特性
@@ -26,6 +26,7 @@
 - AstrBot v3.5.0+
 - Python 3.10+
 - 支持平台：NapCat（OneBot v11 协议）、QQ 官方机器人（qq_official / qq_official_webhook，支持卡片按钮交互，禁言需机器人为群管理员）
+- QQ 官机平台需安装 [astrbot_plugin_qqoffice_expand](https://github.com/piexian/astrbot_plugin_qqoffice_expand)；未安装时官机平台仅回复安装提示、游戏功能不启用，安装后需重载一次 QQ 官方平台适配器
 
 ### 安装插件
 
@@ -223,6 +224,7 @@ AI：🎯 用户名称 挑战命运！
 
 详细的版本更新日志请查看 [CHANGELOG.md](./CHANGELOG.md) 文件。
 
+- **v1.3.5** (2026-08-31) - QQ 官机能力切换至 qqoffice_expand 中台，新卡片自动撤回旧卡片；官机未安装中台时仅提示安装
 - **v1.3.0** (2026-08-16) - QQ 官方机器人平台支持：卡片按钮交互、官方接口禁言、openid 字符串化
 - **v1.2.7** (2026-05-01) - 自定义文本修复：状态标题支持配置，优化禁言角色检查
 - **v1.2.6** (2026-02-21) - 元数据更新：添加 AstrBot 版本要求和平台支持声明
@@ -243,6 +245,7 @@ AI：🎯 用户名称 挑战命运！
 7. **数据持久化**：走火配置会自动保存，重启插件后保留设置
 8. **管理员免疫**：群主和管理员中弹后不会被禁言（显示免疫提示）
 
+9. **QQ 官机依赖**：官机平台需先安装 astrbot_plugin_qqoffice_expand 插件，否则仅回复安装提示、游戏功能不启用
 ## 🐛 故障排除
 
 **游戏无法开始？**
@@ -260,6 +263,10 @@ AI：🎯 用户名称 挑战命运！
 - 确认目标用户可禁言
 - 查看日志获取详细错误
 
+
+**官机平台只回复安装提示？**
+- 安装 astrbot_plugin_qqoffice_expand 插件
+- 安装后重载一次 QQ 官方平台适配器（或重启 AstrBot）
 ## 📞 支持
 
 如有问题请访问 [GitHub仓库](https://github.com/piexian/astrbot_plugin_rg2/issues) 提交issue。

@@ -2,6 +2,19 @@
 
 所有重要的版本更新都会记录在此文件中。
 
+## [1.3.5] - 2026-08-31
+
+### 🔄 架构调整
+- **QQ 官机能力切换至中台插件**: 禁言、Markdown 卡片、按钮回调改由 [astrbot_plugin_qqoffice_expand](https://github.com/piexian/astrbot_plugin_qqoffice_expand) 提供，获得频控、被动窗口管理与互动自动应答。
+
+### ✨ 新增功能
+- **卡片自动撤回**: 官机群聊中新卡片发出后自动撤回上一条，避免界面堆积。
+
+### ⚠️ 使用前提变更
+- QQ 官机平台需安装 `astrbot_plugin_qqoffice_expand`；未安装时仅回复安装提示、游戏功能不启用。
+- 安装后需重载一次 QQ 官方平台适配器。
+- OneBot（aiocqhttp）平台行为不变。
+
 ## [1.3.0] - 2026-08-16
 
 ### ✨ 新增功能
