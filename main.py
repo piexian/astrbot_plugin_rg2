@@ -452,13 +452,14 @@ class RevolverGunPlugin(Star):
             identity = None
         prev = self._last_card_msg.get(group_id)
         new_id = resp.get("id") if isinstance(resp, dict) else None
+        # 在撤回的 await 前更新，避免并发发送重复读取同一张旧卡片。
+        if new_id:
+            self._last_card_msg[group_id] = (identity, new_id)
         if prev and prev[0] == identity and prev[1] != new_id:
             try:
                 await view.group.recall(group_id, prev[1])
             except Exception as e:
                 logger.debug(f"撤回旧卡片失败（可能超2分钟窗口）: {e}")
-        if new_id:
-            self._last_card_msg[group_id] = (identity, new_id)
         return resp
 
     async def _reply_load_result(

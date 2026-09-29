@@ -391,3 +391,34 @@ async def test_ai_flow_proactive_send_via_identity_view(tmp_path, monkeypatch):
     assert len(texts) == 1
     assert texts[0]["target"] == "GID" and texts[0]["appid"] == "APP-1"
     assert texts[0]["msg_id"] is None  # 主动消息（不带被动窗口）
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cards_track_latest_before_recall(tmp_path, monkeypatch):
+    plugin = make_plugin(tmp_path, monkeypatch)
+    plugin._last_card_msg["GID"] = ("bot", "old")
+    ids = iter(("new-a", "new-b"))
+    started, release = asyncio.Event(), asyncio.Event()
+    recalled = []
+
+    async def send_rich(**kwargs):
+        return {"id": next(ids)}
+
+    async def recall(group, message):
+        recalled.append(message)
+        if len(recalled) == 1:
+            started.set()
+            await release.wait()
+
+    view = SimpleNamespace(
+        prefix=lambda: "bot", send_rich=send_rich, group=SimpleNamespace(recall=recall)
+    )
+    first = asyncio.create_task(plugin._send_card("GID", "first", {}, view=view))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        await plugin._send_card("GID", "second", {}, view=view)
+    finally:
+        release.set()
+        await first
+    assert recalled == ["old", "new-a"]
+    assert plugin._last_card_msg["GID"] == ("bot", "new-b")
