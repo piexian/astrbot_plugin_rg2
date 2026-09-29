@@ -26,7 +26,8 @@
 - AstrBot v3.5.0+
 - Python 3.10+
 - 支持平台：NapCat（OneBot v11 协议）、QQ 官方机器人（qq_official / qq_official_webhook，支持卡片按钮交互，禁言需机器人为群管理员）
-- QQ 官机平台需安装 [astrbot_plugin_qqoffice_expand](https://github.com/piexian/astrbot_plugin_qqoffice_expand)；未安装时官机平台仅回复安装提示、游戏功能不启用，安装后需重载一次 QQ 官方平台适配器
+- QQ 官机平台需安装 [astrbot_plugin_qqoffice_expand](https://github.com/piexian/astrbot_plugin_qqoffice_expand)，且要求其支持 SDK v1 公开接口（即提供 `get_service(api_version=1)`）；本插件通过 AstrBot 原生注册表（`Context.get_registered_star`）发现并绑定其公开服务，不使用旧版内部发送接口
+- 旧版提供者没有公开接口时提示升级；依赖成功加载后通过本体钩子自动补绑，无需反复重载消费者
 
 ### 安装插件
 
@@ -125,6 +126,47 @@
 | `ai_trigger_delay` | AI工具触发延迟（秒） | 2 | 任意正整数 |
 
 > ⚠️ **重要提示**：修改AI工具相关配置（如 `ai_trigger_delay`）后，需要重载插件才能生效。其他配置（如超时时间、走火概率等）会实时生效。
+
+## SDK v1 公开接口（状态查询）
+
+本插件对外公开一个**状态门面**（不暴露游戏内部可变对象与管理方法），其他插件可按 AstrBot 原生注册表发现并查询：
+
+```python
+meta = context.get_registered_star("astrbot_plugin_rg2")
+if meta is None:
+    ...  # 当前注册表无记录；检查安装和加载状态，不能直接判为未安装
+elif not meta.activated:
+    ...  # 已被禁用
+elif meta.star_cls is None:
+    ...  # 已启用但无实例
+else:
+    getter = getattr(meta.star_cls, "get_service", None)
+    if not callable(getter):
+        raise RuntimeError("当前 rg2 版本不支持 SDK，请升级插件")
+    service = getter(api_version=1)  # 不兼容时抛 code=unsupported_version
+    status = service.get_status()
+    caps = service.capabilities()  # {"api_version": 1, "features": []}
+    snapshot = await service.wait_ready(timeout=5)  # 不要在 initialize 中等待依赖
+```
+
+`get_status()` 返回：
+
+```json
+{
+  "api_version": 1,
+  "instance_id": "rg2-…（每次插件加载重新生成）",
+  "state": "ready",
+  "ready": true,
+  "reason": null,
+  "dependencies": { "qqoffice": { "…": "…" } }
+}
+```
+
+- `ready` 只表示本插件自身初始化完成；缺少 QQ 官机中台只影响官机功能，不影响其他平台的游戏规则，也不会使 `ready` 变为 `false`。
+- 插件重载后旧服务对象永久失效（`wait_ready` 抛 `RuntimeError`，code=`service_closed`），新服务 `instance_id` 不同。
+- `dependencies.qqoffice` 按当前注册表报告 `activated`、`has_instance`、`api_supported`、`version` 和提供者 `ready`；`available` 仅在已绑定且就绪时为真。`state` 区分 `bound`、`unbound`、`unready`、`missing`、`disabled`、`no_instance`、`unsupported_api`、`unsupported_version` 等情况；查询不会绑定订阅、刷新平台或发请求。
+- 反过来，本插件依赖 qqoffice_expand 的 SDK v1 公开门面（`for_event`/`instance` 绑定视图）完成官机发送、禁言与撤回；提供者未提供该接口时明确提示升级，不回退旧接口。
+- 卡片发送结果不明时停止自动补发与撤回旧卡片；仅错误明确标记 `phase=not_sent/rejected` 时降级为文本。可关闭 `qq_card_enabled` 直接使用文本。
 
 ## 🎯 游戏规则
 
@@ -244,8 +286,8 @@ AI：🎯 用户名称 挑战命运！
 6. **超时机制**：游戏装填后300秒内无人操作会自动结束
 7. **数据持久化**：走火配置会自动保存，重启插件后保留设置
 8. **管理员免疫**：群主和管理员中弹后不会被禁言（显示免疫提示）
-
-9. **QQ 官机依赖**：官机平台需先安装 astrbot_plugin_qqoffice_expand 插件，否则仅回复安装提示、游戏功能不启用
+9. **QQ 官机依赖**：需要支持 SDK v1 的 qqoffice_expand；不可用时按具体原因提示，其他平台不受影响。
+10. **改动生效**：替换代码后由用户自行决定何时重载对应插件；不自动重载或重启本体。
 ## 🐛 故障排除
 
 **游戏无法开始？**
@@ -265,8 +307,22 @@ AI：🎯 用户名称 挑战命运！
 
 
 **官机平台只回复安装提示？**
-- 安装 astrbot_plugin_qqoffice_expand 插件
-- 安装后重载一次 QQ 官方平台适配器（或重启 AstrBot）
+- 安装 astrbot_plugin_qqoffice_expand 插件（需支持 SDK v1 `get_service` 公开接口）
+- `unsupported_api` / `unsupported_version`：升级不兼容的依赖插件。
+- `missing`：注册表无记录，检查安装和加载日志；`disabled`：先启用；`unready`：等待提供者就绪；`bound`：已接入。
+- SDK 迁移本身不要求重载平台。只有现有 WS 会话缺少事件 intents 时，才需按 QQ 扩展日志与文档处理。
+
+## 测试说明
+
+仓库自带离线回归测试（不连接真实 AstrBot/QQ，替身模拟真实公开门面与绑定视图形状）：
+
+```bash
+python -m pytest tests -q -o asyncio_mode=auto
+```
+
+覆盖：SDK v1 门面契约（版本协商/wait_ready/关闭）、发现层（缺失/禁用/无实例/不支持接口）、加载顺序与卸载重载幂等、按钮与普通消息来源绑定、多实例身份隔离、卡片撤回同身份隔离、禁言降级提示等。
+
+同级存在 QQ 扩展仓库或设置 `QQOFFICE_SOURCE` 时，额外运行真实双方插件的契约测试（HTTP 使用内存替身）；否则明确跳过该文件。离线通过不等于 Windows 运行验证，实际加载与手测由用户执行。
 ## 📞 支持
 
 如有问题请访问 [GitHub仓库](https://github.com/piexian/astrbot_plugin_rg2/issues) 提交issue。

@@ -26,8 +26,15 @@ _QQ_ACTIONS = ("shoot", "status", "load")
 
 
 def is_qq_official_event(event) -> bool:
-    """按 AstrBot 平台类型判断事件是否来自 QQ 官方机器人平台。"""
-    name = event.get_platform_name()
+    """按 AstrBot 平台类型判断事件是否来自 QQ 官方机器人平台。
+
+    中台扩展事件（QQOfficeEvent，如按钮回调）不携带平台名：视为官机
+    事件，其来源身份由提供者 for_event 核验，不在此处判断。
+    """
+    getter = getattr(event, "get_platform_name", None)
+    if getter is None:
+        return hasattr(event, "source") or hasattr(event, "is_interaction")
+    name = getter()
     if ADAPTER_NAME_2_TYPE is not None:
         return ADAPTER_NAME_2_TYPE.get(name) in _QQ_OFFICIAL_TYPES
     return name in _QQ_OFFICIAL_NAMES
@@ -107,7 +114,12 @@ def parse_interaction(button_data: str | None) -> tuple[str, str] | None:
 
 
 class QQInteractionShim:
-    """按钮回调场景的最小 event 替身，供游戏逻辑复用。"""
+    """按钮回调场景的最小 event 替身，供游戏逻辑复用身份信息。
+
+    发送/禁言/撤回不经 shim：发送类调用必须使用处理函数从原始
+    QQOfficeEvent 经 ``svc.for_event`` 绑定的视图（shim.qq_view 只读携带，
+    不构造任何发送能力）。
+    """
 
     def __init__(
         self,
@@ -115,12 +127,14 @@ class QQInteractionShim:
         group_openid: str,
         member_openid: str,
         platform_name: str = "qq_official",
+        qq_view=None,
     ):
         self.bot = bot
         self.message_obj = SimpleNamespace(group_id=group_openid)
         self.unified_msg_origin = f"{platform_name}:GroupMessage:{group_openid}"
         self._member_openid = member_openid
         self._platform_name = platform_name
+        self.qq_view = qq_view
 
     def get_sender_id(self) -> str:
         return self._member_openid

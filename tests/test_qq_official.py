@@ -57,3 +57,13 @@ def test_shim():
     assert shim.is_admin() is False
     assert shim.get_platform_name() == "qq_official"
     assert shim.unified_msg_origin == "qq_official:GroupMessage:GID"
+    assert shim.qq_view is None  # 不携带视图时不得用于发送
+
+
+def test_shim_carries_bound_view():
+    """回调替身只读携带原始事件绑定的视图，不构造发送能力。"""
+    sentinel = object()
+    shim = QQInteractionShim(None, "GID", "MID", qq_view=sentinel)
+    assert shim.qq_view is sentinel
+    assert not hasattr(shim, "send_rich")
+    assert not hasattr(shim, "group")
