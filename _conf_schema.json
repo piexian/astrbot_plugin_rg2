@@ -69,7 +69,7 @@
     "description": "QQ官方机器人平台启用卡片交互（Markdown卡片+按钮）",
     "type": "bool",
     "default": true,
-    "hint": "开启后QQ官机群聊中装填会发送带按钮的卡片，点击按钮即可开枪/查状态"
+    "hint": "开启后QQ官机群聊中装填会发送带按钮的卡片，点击按钮即可开枪/查状态（需安装 qqoffice_expand 插件）"
   },
   "custom_texts": {
     "type": "template_list",

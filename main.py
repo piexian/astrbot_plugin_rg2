@@ -12,15 +12,12 @@ from astrbot.api.star import Context, Star, StarTools, register
 
 from .core.qq_official import (
     QQInteractionShim,
-    ban_member,
     build_game_keyboard,
     build_start_keyboard,
-    get_qq_bot_client,
     is_qq_official_event,
     parse_interaction,
-    send_card,
-    send_text,
 )
+from .public_api import RevolverGameService, ServiceAPIVersionError
 from .text_manager import TextManager
 
 # 插件元数据（仅 register 装饰器使用，真实版本号从 metadata.yaml 读取）
@@ -30,13 +27,31 @@ PLUGIN_DESCRIPTION = (
     "一个刺激的群聊轮盘赌游戏插件，支持管理员装填子弹、用户开枪对决、随机走火等功能"
 )
 PLUGIN_REPO = "https://github.com/piexian/astrbot_plugin_rg2"
-_FALLBACK_VERSION = "1.3.0"
+_FALLBACK_VERSION = "1.3.5"
 
+QQOFFICE_PLUGIN = "astrbot_plugin_qqoffice_expand"
+INSTALL_HINT = (
+    "当前未发现已加载的 astrbot_plugin_qqoffice_expand，请检查安装与加载状态。\n"
+    "插件地址：https://github.com/piexian/astrbot_plugin_qqoffice_expand"
+)
 # 导入事件类型
 try:
     from astrbot.core.star.filter.event_message_type import EventMessageType
 except ImportError:
     EventMessageType = None  # 兼容旧版本
+
+
+class _CardDeliveryUnknown(RuntimeError):
+    """发送结果无法确认，禁止按失败自动补发。"""
+
+
+def _noop_decorator(*_args, **_kwargs):
+    return lambda f: f
+
+
+# 老版本 AstrBot 无插件加载广播钩子，空装饰器兜底
+_on_plugin_loaded = getattr(filter, "on_plugin_loaded", _noop_decorator)
+_on_plugin_unloaded = getattr(filter, "on_plugin_unloaded", _noop_decorator)
 
 
 @register(
@@ -94,7 +109,14 @@ class RevolverGunPlugin(Star):
 
         # QQ 官机卡片交互
         self.qq_card_enabled = self.config.get("qq_card_enabled", True)
-        self._qq_client = None  # on_platform_loaded 时初始化
+        self.qq_svc = None  # qqoffice_expand SDK v1 公开门面，None 时官机功能停用
+        self._qq_unsub = None  # INTERACTION_CREATE 订阅解绑闭包
+        self._qq_bind_state = "unknown"  # 最近一次绑定尝试的稳定原因码
+        self._qq_provider_version = None  # 提供者版本（沿用 StarMetadata）
+        self._last_card_msg = {}  # group_id -> (视图身份 prefix, message_id)
+
+        # SDK v1 状态门面：同次加载返回同一对象
+        self._public_service = RevolverGameService(self)
 
         # 弹膛/装弹相关
         self.max_bullet_count = self.config.get("max_bullet_count", 6)
@@ -155,64 +177,223 @@ class RevolverGunPlugin(Star):
         except Exception as e:
             logger.error(f"注册函数工具失败: {e}", exc_info=True)
 
-    # ========== QQ 官机卡片交互 ==========
+    # ========== SDK v1 公开接口 ==========
+
+    def get_service(self, api_version: int = 1):
+        """获取 SDK v1 状态服务；版本只接受整型 1。"""
+        if type(api_version) is not int or api_version != 1:
+            raise ServiceAPIVersionError("astrbot_plugin_rg2 仅支持整型 api_version=1")
+        return self._public_service
+
+    def qqoffice_dependency_status(self) -> dict:
+        """读取当前注册表与服务状态，不触发绑定或网络请求。"""
+        status, _ = self._probe_qqoffice()
+        return status
+
+    def _probe_qqoffice(self):
+        status = {
+            "available": False,
+            "state": "unknown",
+            "reason": "registry_unavailable",
+            "activated": None,
+            "has_instance": None,
+            "api_supported": None,
+            "version": None,
+            "ready": None,
+        }
+        try:
+            meta = self.context.get_registered_star(QQOFFICE_PLUGIN)
+        except Exception:
+            return status, None
+        if meta is None:
+            status.update(state="missing", reason="missing")
+            return status, None
+        star = meta.star_cls
+        getter = getattr(star, "get_service", None)
+        status.update(
+            activated=bool(meta.activated),
+            has_instance=star is not None,
+            api_supported=callable(getter) if star is not None else None,
+            version=getattr(meta, "version", None),
+        )
+        for unavailable, state in (
+            (not meta.activated, "disabled"),
+            (star is None, "no_instance"),
+            (not callable(getter), "unsupported_api"),
+        ):
+            if unavailable:
+                status.update(state=state, reason=state)
+                return status, None
+        try:
+            service = getter(api_version=1)
+        except Exception as exc:
+            state = (
+                "unsupported_version"
+                if getattr(exc, "code", None) == "unsupported_version"
+                else "bind_failed"
+            )
+            status.update(state=state, reason=state)
+            return status, None
+        try:
+            provider_status = service.get_status()
+            ready = provider_status["ready"] is True
+        except Exception:
+            status.update(state="bind_failed", reason="status_query_failed")
+            return status, None
+        bound = service is self.qq_svc and self._qq_unsub is not None
+        status.update(
+            available=ready and bound,
+            ready=ready,
+            state="bound" if ready and bound else "unbound" if ready else "unready",
+            reason=None
+            if ready and bound
+            else "not_bound"
+            if ready
+            else provider_status.get("reason") or "provider_not_ready",
+        )
+        return status, service
+
+    # ========== QQ 官机中台接入 ==========
 
     async def initialize(self):
-        """插件初始化：安装 QQ 官机按钮回调钩子"""
-        self._install_qq_interaction_hook()
+        """尝试接入依赖但不阻塞本插件初始化。"""
+        self._try_bind_qqoffice()
+        self._public_service._set_state("ready")
 
-    @filter.on_platform_loaded()
-    async def on_platform_loaded(self):
-        """平台加载完成后再次尝试安装钩子（平台晚于插件加载的场景）"""
-        self._install_qq_interaction_hook()
+    def _unbind_qqoffice(self):
+        unsub, self._qq_unsub = self._qq_unsub, None
+        self.qq_svc = None
+        self._qq_provider_version = None
+        if unsub is not None:
+            try:
+                unsub()
+            except Exception as exc:
+                logger.warning(f"解除 qqoffice 订阅失败: {exc}")
 
-    def _install_qq_interaction_hook(self):
-        """给 QQ 官机 client 挂 on_interaction_create（链式，幂等）"""
-        if self._qq_client is not None:
-            return
-        try:
-            client = get_qq_bot_client(self.context)
-        except Exception as e:
-            logger.error(f"获取QQ官机client失败: {e}")
-            return
-        if client is None:
-            logger.debug("未找到QQ官机平台实例，跳过按钮回调钩子安装")
-            return
-        # 开启互动事件 intent（群消息 1<<25 + 互动事件 1<<26）
-        intents = getattr(client, "intents", None)
-        if isinstance(intents, int):
-            client.intents = intents | (1 << 25) | (1 << 26)
-        elif intents is not None:
-            intents.interaction = True
-        previous = getattr(client, "on_interaction_create", None)
-
-        async def on_interaction_create(interaction, _prev=previous):
-            if await self._handle_interaction(interaction):
-                return
-            if _prev is not None:
-                await _prev(interaction)
-
-        client.on_interaction_create = on_interaction_create
-        self._qq_client = client
-        logger.info("QQ官机按钮回调钩子安装成功")
-
-    async def _handle_interaction(self, interaction) -> bool:
-        """处理按钮回调，返回 True 表示已消费"""
-        resolved = getattr(getattr(interaction, "data", None), "resolved", None)
-        parsed = parse_interaction(getattr(resolved, "button_data", None))
-        if not parsed:
+    def _try_bind_qqoffice(self) -> bool:
+        """核对当前依赖实例，就绪后幂等绑定；旧引用与订阅及时失效。"""
+        if self._public_service.state in ("closing", "closed"):
             return False
-        action, group_openid = parsed
-        # 校验回调与事件来自同一群
-        if group_openid != getattr(interaction, "group_openid", group_openid):
-            await interaction._api.on_interaction_result(interaction.id, 1)
+        status, service = self._probe_qqoffice()
+        self._qq_bind_state = status["state"]
+        if service is None or not status["ready"]:
+            self._unbind_qqoffice()
+            if status["state"] in ("unsupported_api", "unsupported_version"):
+                logger.warning("qqoffice_expand 不支持 SDK v1，请升级提供者")
+            return False
+        if status["available"]:
             return True
-        await interaction._api.on_interaction_result(interaction.id, 0)
-        if self._qq_client is None:
-            return True
-        member_openid = getattr(interaction, "group_member_openid", "") or "unknown"
-        shim = QQInteractionShim(self._qq_client, group_openid, member_openid)
+        self._unbind_qqoffice()
         try:
+            unsub = service.on("INTERACTION_CREATE", self._on_qqoffice_event)
+        except Exception as exc:
+            self._qq_bind_state = "bind_failed"
+            logger.warning(f"订阅 INTERACTION_CREATE 失败: {exc}")
+            return False
+        self.qq_svc = service
+        self._qq_unsub = unsub
+        self._qq_provider_version = status["version"]
+        self._qq_bind_state = "bound"
+        logger.info("已通过 SDK v1 接入 qqoffice_expand")
+        return True
+
+    @_on_plugin_loaded()
+    async def _on_expand_loaded(self, metadata):
+        """中台加载广播：晚于本插件加载时补绑"""
+        if getattr(metadata, "name", "") == QQOFFICE_PLUGIN:
+            self._try_bind_qqoffice()
+
+    @_on_plugin_unloaded()
+    async def _on_expand_unloaded(self, metadata):
+        """中台卸载广播：解绑等待下次加载（幂等）。"""
+        if getattr(metadata, "name", "") == QQOFFICE_PLUGIN:
+            self._unbind_qqoffice()
+            self._qq_bind_state = "missing"
+            logger.info("qqoffice_expand 已卸载，等待依赖重新加载")
+
+    def _qq_gate(self, event: AstrMessageEvent) -> str | None:
+        """官机依赖不可用时给出对应原因，其他平台不受影响。"""
+        if not is_qq_official_event(event) or self._try_bind_qqoffice():
+            return None
+        hints = {
+            "disabled": "qqoffice_expand 已被禁用，请启用后再试。",
+            "no_instance": "qqoffice_expand 当前没有可调用实例，请检查加载状态。",
+            "unsupported_api": "qqoffice_expand 版本过旧，请升级到支持 SDK v1 的版本。",
+            "unsupported_version": "qqoffice_expand 的 SDK 版本不兼容，请升级依赖插件。",
+            "unready": "qqoffice_expand 尚未就绪或已关闭，请等待其完成加载。",
+            "bind_failed": "qqoffice_expand 接入失败，请检查插件日志。",
+        }
+        return hints.get(self._qq_bind_state, INSTALL_HINT)
+
+    def _view_for_event(self, event):
+        """从 QQ 官机事件绑定来源视图（svc.for_event），失败返回 None。
+
+        - 真实事件：携带事件目标与来源身份，发送/禁言/撤回都走它；
+        - 按钮回调替身（QQInteractionShim）：直接使用处理函数从原始
+          QQOfficeEvent 绑定的视图（shim.qq_view），不构造无来源发送；
+        - 非 QQ 官机事件返回 None，调用方按未绑定降级。
+        """
+        if self.qq_svc is None:
+            return None
+        view = getattr(event, "qq_view", None)
+        if view is None and is_qq_official_event(event):
+            try:
+                view = self.qq_svc.for_event(event)
+            except Exception as e:
+                logger.warning(f"绑定 qqoffice 来源视图失败: {e}")
+                return None
+        return view
+
+    def _delay_view_for(self, event):
+        """为延迟行为（超时通知等）创建同身份长期视图。
+
+        instance(platform_id) 视图跟随同机器人重载；改绑其他 AppID 后
+        调用时明确失败，绝不自动换机器人或跨代次重试。非官机来源返回 None。
+        """
+        if self.qq_svc is None:
+            return None
+        try:
+            view = self._view_for_event(event)
+            if view is None:
+                return None
+            identity = view.prefix()
+            delayed = self.qq_svc.instance(view.platform_id)
+            if delayed.prefix() != identity:
+                logger.warning("事件所属机器人已变更，跳过延迟发送")
+                return None
+            return delayed
+        except Exception as e:
+            logger.warning(f"创建官机延迟发送视图失败: {e}")
+            return None
+
+    async def _on_qqoffice_event(self, ev):
+        """处理中台转发的按钮回调（INTERACTION_CREATE）。
+
+        发送/禁言必须使用从原始扩展事件绑定的视图（携带来源机器人身份
+        与被动回复目标），不能只留 group_openid 或构造无来源替身发送。
+        """
+        if self.qq_svc is None or not getattr(ev, "is_interaction", False):
+            return
+        try:
+            resolved = (ev.raw.get("data") or {}).get("resolved") or {}
+            parsed = parse_interaction(resolved.get("button_data"))
+            if not parsed:
+                logger.debug(f"忽略非本插件按钮回调: {resolved.get('button_data')}")
+                return
+            action, group_openid = parsed
+            # 校验回调与事件来自同一群
+            if ev.group_openid and group_openid != ev.group_openid:
+                logger.warning(
+                    f"按钮回调群不一致: 数据={group_openid} 事件={ev.group_openid}，忽略"
+                )
+                return
+            # 从原始扩展事件绑定视图：事件目标（event_id 被动通道）随视图携带
+            view = self._view_for_event(ev)
+            if view is None:
+                logger.warning("按钮回调无法绑定来源视图，忽略本次交互（不无来源发送）")
+                return
+            member_openid = ev.member_openid or "unknown"
+            shim = QQInteractionShim(None, group_openid, member_openid, qq_view=view)
             if action == "load":
                 # 快速开始：随机装填（与 /装填 无参一致，所有用户可用）
                 msgs = await self._do_load_game(shim, group_openid, "玩家", None)
@@ -224,7 +405,6 @@ class RevolverGunPlugin(Star):
             else:
                 msgs = [self._do_status(group_openid)]
             content = "\n".join(msgs)
-            event_id = getattr(interaction, "event_id", None)
             if self.qq_card_enabled:
                 # 按钮点击后不可复原，每次交互都补发带新按钮的卡片；
                 # 键盘随游戏状态切换（进行中=开枪/状态，未开始=快速开始）
@@ -233,53 +413,85 @@ class RevolverGunPlugin(Star):
                     if group_openid in self.group_games
                     else build_start_keyboard(group_openid)
                 )
-                try:
-                    await send_card(
-                        self._qq_client.api,
-                        group_openid,
-                        content,
-                        keyboard,
-                        event_id=event_id,
-                    )
-                except Exception as e:
-                    logger.error(f"回调卡片发送失败，回退纯文本: {e}")
-                    await send_text(
-                        self._qq_client.api, group_openid, content, event_id=event_id
-                    )
+                resp = await self._send_card(group_openid, content, keyboard, view=view)
+                if resp is None:
+                    await view.group.send(group_openid, content, event_id=ev.payload_id)
             else:
-                await send_text(
-                    self._qq_client.api, group_openid, content, event_id=event_id
-                )
+                await view.group.send(group_openid, content, event_id=ev.payload_id)
+        except _CardDeliveryUnknown as exc:
+            logger.warning(str(exc))
         except Exception as e:
             logger.error(f"按钮回调处理失败: {e}", exc_info=True)
-        return True
+
+    async def _send_card(
+        self,
+        group_id: str,
+        content: str,
+        keyboard: dict,
+        *,
+        view,
+    ) -> dict | None:
+        """发送卡片并撤回同身份旧卡片；结果不明时禁止自动补发。"""
+        if view is None:
+            return None
+        try:
+            resp = await view.send_rich(
+                markdown={"markdown": {"content": content}},
+                keyboard={"keyboard": keyboard},
+            )
+        except Exception as e:
+            logger.error(f"发送卡片失败: {e}")
+            if getattr(e, "phase", None) in ("not_sent", "rejected"):
+                return None
+            raise _CardDeliveryUnknown("发送结果不明，已停止自动补发") from e
+        if not isinstance(resp, dict) or not resp.get("id"):
+            raise _CardDeliveryUnknown("消息结果缺少 ID，已停止自动补发与撤回")
+        try:
+            identity = view.prefix()
+        except Exception:
+            identity = None
+        prev = self._last_card_msg.get(group_id)
+        new_id = resp.get("id") if isinstance(resp, dict) else None
+        if prev and prev[0] == identity and prev[1] != new_id:
+            try:
+                await view.group.recall(group_id, prev[1])
+            except Exception as e:
+                logger.debug(f"撤回旧卡片失败（可能超2分钟窗口）: {e}")
+        if new_id:
+            self._last_card_msg[group_id] = (identity, new_id)
+        return resp
 
     async def _reply_load_result(
         self, event: AstrMessageEvent, group_id: str, msgs: list[str]
     ) -> bool:
         """QQ 官机且开启卡片时直接发卡片，返回 True；否则返回 False 走原文本逻辑"""
-        if not (self.qq_card_enabled and is_qq_official_event(event)):
+        if not (self.qq_card_enabled and self.qq_svc and is_qq_official_event(event)):
+            return False
+        view = self._view_for_event(event)
+        if view is None:
             return False
         try:
-            await send_card(
-                event.bot.api,
-                group_id,
-                "\n".join(msgs),
-                build_game_keyboard(group_id),
-                msg_id=getattr(event.message_obj, "message_id", None),
+            resp = await self._send_card(
+                group_id, "\n".join(msgs), build_game_keyboard(group_id), view=view
             )
-            # 卡片已通过 API 直发，标记事件已消费，防止继续流入 LLM
+        except _CardDeliveryUnknown as exc:
+            logger.warning(str(exc))
             event.stop_event()
             return True
-        except Exception as e:
-            logger.error(f"发送游戏卡片失败，回退纯文本: {e}")
+        if resp is None:
             return False
+        # 卡片已通过中台直发，标记事件已消费，防止继续流入 LLM
+        event.stop_event()
+        return True
 
     async def _reply_status_result(
         self, event: AstrMessageEvent, group_id: str, text: str
     ) -> bool:
         """QQ 官机且开启卡片时状态回复渲染为卡片，返回 True；否则返回 False"""
-        if not (self.qq_card_enabled and is_qq_official_event(event)):
+        if not (self.qq_card_enabled and self.qq_svc and is_qq_official_event(event)):
+            return False
+        view = self._view_for_event(event)
+        if view is None:
             return False
         # 键盘随游戏状态切换：进行中=开枪/状态，未开始=快速开始
         keyboard = (
@@ -288,19 +500,16 @@ class RevolverGunPlugin(Star):
             else build_start_keyboard(group_id)
         )
         try:
-            await send_card(
-                event.bot.api,
-                group_id,
-                text,
-                keyboard,
-                msg_id=getattr(event.message_obj, "message_id", None),
-            )
-            # 卡片已通过 API 直发，标记事件已消费，防止继续流入 LLM
+            resp = await self._send_card(group_id, text, keyboard, view=view)
+        except _CardDeliveryUnknown as exc:
+            logger.warning(str(exc))
             event.stop_event()
             return True
-        except Exception as e:
-            logger.error(f"发送状态卡片失败，回退纯文本: {e}")
+        if resp is None:
             return False
+        # 卡片已通过中台直发，标记事件已消费，防止继续流入 LLM
+        event.stop_event()
+        return True
 
     def _get_group_id(self, event: AstrMessageEvent) -> str | None:
         """获取群ID（统一返回字符串；QQ 官机为 group_openid）
@@ -582,12 +791,15 @@ class RevolverGunPlugin(Star):
         user_id: str,
         *,
         is_bannable: bool | None = None,
+        qq_view=None,
     ) -> int:
         """禁言用户
 
         Args:
             event: 消息事件对象
             user_id: 要禁言的用户ID（QQ 官机为 member_openid）
+            is_bannable: 预先计算的可禁言标志
+            qq_view: 来源视图（QQ 官机）；未传时从事件现场绑定，绑定失败则禁言失败
 
         Returns:
             禁言时长（秒），如果禁言失败返回 0
@@ -608,11 +820,25 @@ class RevolverGunPlugin(Star):
         formatted_duration = self._format_ban_duration(duration)
         self._last_ban_error = ""
 
-        # QQ 官机：直调官方禁言接口
+        # QQ 官机：走 qqoffice_expand 绑定视图禁言接口
         if is_qq_official_event(event):
+            if self.qq_svc is None:
+                self._last_ban_error = "svc_missing"
+                logger.warning("官机中台未绑定，跳过禁言")
+                return 0
+            if qq_view is None:
+                qq_view = self._view_for_event(event)
+            if qq_view is None:
+                self._last_ban_error = "no_source"
+                logger.warning("无法绑定官机来源视图，跳过禁言（不换机器人重试）")
+                return 0
             try:
                 logger.info(f"🎯 正在禁言用户 {user_id}，时长 {formatted_duration}")
-                await ban_member(event.bot.api, group_id, user_id, duration)
+                expire = (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    + datetime.timedelta(seconds=duration)
+                ).isoformat(timespec="seconds")
+                await qq_view.group.mute_member(group_id, user_id, expire)
                 logger.info(
                     f"✅ 用户 {user_id} 在群 {group_id} 被禁言 {formatted_duration}"
                 )
@@ -626,7 +852,6 @@ class RevolverGunPlugin(Star):
                 elif "群主" in err or "管理员" in err or "普通成员" in err:
                     self._last_ban_error = "target_immune"
                 return 0
-
         try:
             if hasattr(event.bot, "set_group_ban"):
                 logger.info(f"🎯 正在禁言用户 {user_id}，时长 {formatted_duration}")
@@ -655,20 +880,33 @@ class RevolverGunPlugin(Star):
 
     def _format_ban_failure(self) -> str:
         """根据最近一次禁言失败原因生成回复文案"""
+        if self._last_ban_error == "svc_missing":
+            return "⚠️ 禁言失败！（需安装 qqoffice_expand 插件）"
+        if self._last_ban_error == "no_source":
+            return "⚠️ 禁言失败！（官机来源视图不可用，请稍后重试）"
         if self._last_ban_error == "target_immune":
             return "⚠️ 对方是群主/管理员，免疫禁言！"
         if self._last_ban_error == "bot_admin":
             return "⚠️ 禁言失败！（机器人需要群管理员权限）"
         return "⚠️ 禁言失败！"
 
-    async def _send_group_text(self, bot, group_id: str, text: str):
-        """跨平台发送群文本消息（OneBot 走 send_group_msg，QQ 官机走官方接口）"""
+    async def _send_group_text(self, bot, group_id: str, text: str, qq_view=None):
+        """跨平台发送群文本消息。
+
+        OneBot 走 send_group_msg；QQ 官机走调用方传入的来源视图
+        （for_event / instance 长期视图），不使用任意机器人群号发送。
+        """
         if hasattr(bot, "send_group_msg"):
             await bot.send_group_msg(group_id=int(group_id), message=text)
-        elif hasattr(bot, "api"):  # QQ 官机 botClient
-            await send_text(bot.api, group_id, text)
-        else:
-            logger.error("❌ 当前平台不支持主动发群消息")
+            return
+        if qq_view is not None:
+            try:
+                await qq_view.group.send(str(group_id), text)
+                return
+            except Exception as e:
+                logger.error(f"官机主动群消息发送失败: {e}")
+                return
+        logger.warning("官机通道无可用来源视图，跳过主动群消息")
 
     # ========== 共享业务逻辑 ==========
 
@@ -855,6 +1093,10 @@ class RevolverGunPlugin(Star):
         指定数量则装填固定子弹（仅限管理员）
         """
         try:
+            hint = self._qq_gate(event)
+            if hint:
+                yield event.plain_result(hint)
+                return
             group_id = self._get_group_id(event)
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
@@ -880,6 +1122,10 @@ class RevolverGunPlugin(Star):
         参与当前游戏的射击，可能中弹或空弹
         """
         try:
+            hint = self._qq_gate(event)
+            if hint:
+                yield event.plain_result(hint)
+                return
             group_id = self._get_group_id(event)
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
@@ -907,6 +1153,10 @@ class RevolverGunPlugin(Star):
         查看当前游戏的子弹剩余情况和弹膛状态
         """
         try:
+            hint = self._qq_gate(event)
+            if hint:
+                yield event.plain_result(hint)
+                return
             group_id = self._get_group_id(event)
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
@@ -965,6 +1215,10 @@ class RevolverGunPlugin(Star):
         开启后群聊中每条消息都有概率触发随机走火
         """
         try:
+            hint = self._qq_gate(event)
+            if hint:
+                yield event.plain_result(hint)
+                return
             group_id = self._get_group_id(event)
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
@@ -993,6 +1247,10 @@ class RevolverGunPlugin(Star):
         关闭随机走火功能
         """
         try:
+            hint = self._qq_gate(event)
+            if hint:
+                yield event.plain_result(hint)
+                return
             group_id = self._get_group_id(event)
             if not group_id:
                 yield event.plain_result("❌ 仅限群聊使用")
@@ -1026,6 +1284,10 @@ class RevolverGunPlugin(Star):
         try:
             group_id = self._get_group_id(event)
             if group_id and self._check_misfire(group_id):
+                hint = self._qq_gate(event)
+                if hint:
+                    yield event.plain_result(hint)
+                    return
                 user_name = self._get_user_name(event)
                 user_id = event.get_sender_id()
                 yield event.plain_result(
@@ -1052,8 +1314,10 @@ class RevolverGunPlugin(Star):
             if not task.done():
                 task.cancel()
 
-        # 保存必要的信息用于超时回调
+        # 保存必要的信息用于超时回调；QQ 官机另固定同身份长期视图，
+        # 超时通知不跨机器人/代次重试
         bot = event.bot
+        delay_view = self._delay_view_for(event)
 
         # 创建新的超时任务
         async def timeout_check():
@@ -1071,6 +1335,7 @@ class RevolverGunPlugin(Star):
                             bot,
                             group_id,
                             f"⏰ {timeout_msg}\n⏱️ {self.timeout} 秒无人操作\n🏁 游戏已自动结束",
+                            qq_view=delay_view,
                         )
                     except Exception as e:
                         logger.error(f"发送超时通知失败: {e}")
@@ -1199,11 +1464,15 @@ class RevolverGunPlugin(Star):
             )
             if await self._reply_load_result(event, group_id, msgs):
                 return
+            view = self._delay_view_for(event)
             for msg in msgs:
-                await self._send_group_text(event.bot, group_id, msg)
+                await self._send_group_text(event.bot, group_id, msg, qq_view=view)
         except Exception as e:
             logger.error(f"AI启动游戏失败: {e}")
-            await self._send_group_text(event.bot, group_id, "❌ 游戏启动失败，请重试")
+            view = self._delay_view_for(event)
+            await self._send_group_text(
+                event.bot, group_id, "❌ 游戏启动失败，请重试", qq_view=view
+            )
 
     async def ai_join_game(self, event: AstrMessageEvent):
         """AI参与游戏 - 供 AI 工具调用"""
@@ -1214,13 +1483,17 @@ class RevolverGunPlugin(Star):
         try:
             user_name = self._get_user_name(event)
             user_id = event.get_sender_id()
+            view = self._delay_view_for(event)
             for msg in await self._do_shoot_game(
                 event, group_id, user_name, user_id, ai_mode=True
             ):
-                await self._send_group_text(event.bot, group_id, msg)
+                await self._send_group_text(event.bot, group_id, msg, qq_view=view)
         except Exception as e:
             logger.error(f"AI参与游戏失败: {e}")
-            await self._send_group_text(event.bot, group_id, "❌ 操作失败，请重试")
+            view = self._delay_view_for(event)
+            await self._send_group_text(
+                event.bot, group_id, "❌ 操作失败，请重试", qq_view=view
+            )
 
     async def ai_check_status(self, event: AstrMessageEvent):
         """AI查询游戏状态 - 供 AI 工具调用"""
@@ -1229,17 +1502,26 @@ class RevolverGunPlugin(Star):
             logger.warning("AI工具无法获取group_id")
             return
         try:
-            await self._send_group_text(event.bot, group_id, self._do_status(group_id))
+            view = self._delay_view_for(event)
+            await self._send_group_text(
+                event.bot, group_id, self._do_status(group_id), qq_view=view
+            )
         except Exception as e:
             logger.error(f"AI查询状态失败: {e}")
-            await self._send_group_text(event.bot, group_id, "❌ 查询失败，请重试")
+            view = self._delay_view_for(event)
+            await self._send_group_text(
+                event.bot, group_id, "❌ 查询失败，请重试", qq_view=view
+            )
 
     async def terminate(self):
         """插件卸载清理
 
-        清理所有游戏状态和配置，确保插件安全卸载
+        解除官机订阅与原有任务，公开服务转入 closing/closed（旧对象永久失效）。
         """
+        self._public_service._set_state("closing")
         try:
+            self._unbind_qqoffice()
+            self._last_card_msg.clear()
             # 先记录数量再清理
             num_games = len(self.group_games)
             num_configs = len(self.group_misfire)
@@ -1266,3 +1548,6 @@ class RevolverGunPlugin(Star):
         except Exception as e:
             logger.error(f"插件卸载失败: {e}")
             # 即使清理失败也不抛出异常，确保插件能够卸载
+        finally:
+            # 公开门面永久失效；get_status 仍可查询诊断
+            self._public_service._set_state("closed")

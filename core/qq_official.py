@@ -1,12 +1,8 @@
-"""QQ 官方机器人平台支持：禁言、消息/卡片发送、按钮回调解析。"""
+"""QQ 官方机器人平台支持：平台判断、按钮协议/键盘构造、回调事件替身。"""
 
 from __future__ import annotations
 
-import datetime
 from types import SimpleNamespace
-from typing import Any
-
-from botpy.http import Route
 
 # 按 AstrBot 平台类型判断 QQ 官机（websocket 与 webhook 两种接入）
 try:
@@ -30,101 +26,18 @@ _QQ_ACTIONS = ("shoot", "status", "load")
 
 
 def is_qq_official_event(event) -> bool:
-    """按 AstrBot 平台类型判断事件是否来自 QQ 官方机器人平台。"""
-    name = event.get_platform_name()
+    """按 AstrBot 平台类型判断事件是否来自 QQ 官方机器人平台。
+
+    中台扩展事件（QQOfficeEvent，如按钮回调）不携带平台名：视为官机
+    事件，其来源身份由提供者 for_event 核验，不在此处判断。
+    """
+    getter = getattr(event, "get_platform_name", None)
+    if getter is None:
+        return hasattr(event, "source") or hasattr(event, "is_interaction")
+    name = getter()
     if ADAPTER_NAME_2_TYPE is not None:
         return ADAPTER_NAME_2_TYPE.get(name) in _QQ_OFFICIAL_TYPES
     return name in _QQ_OFFICIAL_NAMES
-
-
-def get_qq_bot_client(context) -> Any | None:
-    """从 platform_manager 获取 QQ 官机的 botpy client（websocket/webhook 均可）。"""
-    adapter_classes = []
-    try:
-        from astrbot.core.platform.sources.qqofficial.qqofficial_platform_adapter import (
-            QQOfficialPlatformAdapter,
-        )
-
-        adapter_classes.append(QQOfficialPlatformAdapter)
-    except ImportError:
-        pass
-    try:
-        from astrbot.core.platform.sources.qqofficial_webhook.qo_webhook_adapter import (
-            QQOfficialWebhookPlatformAdapter,
-        )
-
-        adapter_classes.append(QQOfficialWebhookPlatformAdapter)
-    except ImportError:
-        pass
-    if not adapter_classes or context is None:
-        return None
-    for platform in context.platform_manager.get_insts():
-        if isinstance(platform, tuple(adapter_classes)):
-            return platform.get_client()
-    return None
-
-
-async def ban_member(api, group_openid: str, member_openid: str, seconds: int) -> None:
-    """禁言群成员，调 POST /v2/groups/{group_openid}/restrict_chat_setting。"""
-    expire = (
-        datetime.datetime.now(datetime.timezone.utc)
-        + datetime.timedelta(seconds=seconds)
-    ).isoformat(timespec="seconds")
-    payload = {
-        "members": [
-            {"op": "add", "member_openid": member_openid, "mute_expire_at": expire}
-        ]
-    }
-    await api._http.request(
-        Route(
-            "POST",
-            "/v2/groups/{group_openid}/restrict_chat_setting",
-            group_openid=group_openid,
-        ),
-        json=payload,
-    )
-
-
-async def send_text(
-    api,
-    group_openid: str,
-    content: str,
-    *,
-    msg_id: str | None = None,
-    event_id: str | None = None,
-    msg_seq: int = 1,
-) -> None:
-    """发送群聊纯文本消息（msg_type=0）。"""
-    await api.post_group_message(
-        group_openid=group_openid,
-        msg_type=0,
-        content=content,
-        msg_id=msg_id,
-        msg_seq=msg_seq,
-        event_id=event_id,
-    )
-
-
-async def send_card(
-    api,
-    group_openid: str,
-    markdown_content: str,
-    keyboard: dict,
-    *,
-    msg_id: str | None = None,
-    event_id: str | None = None,
-    msg_seq: int = 1,
-) -> None:
-    """发送 Markdown 卡片消息（msg_type=2），可挂内嵌键盘。"""
-    await api.post_group_message(
-        group_openid=group_openid,
-        msg_type=2,
-        markdown={"content": markdown_content},
-        keyboard=keyboard,
-        msg_id=msg_id,
-        msg_seq=msg_seq,
-        event_id=event_id,
-    )
 
 
 def _make_button(btn_id: str, label: str, visited: str, style: int, data: str) -> dict:
@@ -201,7 +114,12 @@ def parse_interaction(button_data: str | None) -> tuple[str, str] | None:
 
 
 class QQInteractionShim:
-    """按钮回调场景的最小 event 替身，供游戏逻辑复用。"""
+    """按钮回调场景的最小 event 替身，供游戏逻辑复用身份信息。
+
+    发送/禁言/撤回不经 shim：发送类调用必须使用处理函数从原始
+    QQOfficeEvent 经 ``svc.for_event`` 绑定的视图（shim.qq_view 只读携带，
+    不构造任何发送能力）。
+    """
 
     def __init__(
         self,
@@ -209,12 +127,14 @@ class QQInteractionShim:
         group_openid: str,
         member_openid: str,
         platform_name: str = "qq_official",
+        qq_view=None,
     ):
         self.bot = bot
         self.message_obj = SimpleNamespace(group_id=group_openid)
         self.unified_msg_origin = f"{platform_name}:GroupMessage:{group_openid}"
         self._member_openid = member_openid
         self._platform_name = platform_name
+        self.qq_view = qq_view
 
     def get_sender_id(self) -> str:
         return self._member_openid

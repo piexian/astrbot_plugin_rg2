@@ -104,6 +104,11 @@ FLEXIBLE USAGE: Trust your judgment - if user seems to want any of these actions
             if action not in ["start", "join", "status"]:
                 return f"PARAM_ERROR: Invalid action '{action}'. Must be 'start', 'join', or 'status'"
 
+            # 官机平台中台未绑定时由 LLM 转告安装提示
+            gate = getattr(self.plugin, "_qq_gate", None)
+            if gate and gate(event):
+                return "PLATFORM_LIMIT: 当前平台需安装 astrbot_plugin_qqoffice_expand 插件，游戏功能不可用，请如实转告用户"
+
             # 获取对应的插件方法
             method_map = {
                 "start": "ai_start_game",
